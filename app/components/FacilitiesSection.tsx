@@ -241,7 +241,7 @@ export default function FacilitiesSection() {
             <span className="italic text-gold-gradient">Inspire</span>
           </h2>
           <p className="mt-6 text-white/40 font-body text-lg max-w-xl leading-relaxed">
-            Every facility at Horizon is designed with one purpose: to give
+            Every facility at HPS Academy is designed with one purpose: to give
             our students every advantage in their pursuit of excellence.
           </p>
         </div>

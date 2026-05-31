@@ -103,7 +103,7 @@ export default function LoadingScreen({ onComplete }: LoadingScreenProps) {
             Est. 1985
           </p>
           <h1 className="font-display text-3xl md:text-4xl text-white font-light tracking-wide">
-            Horizon Public School
+            HPS Academy
           </h1>
           <p className="font-alt text-xs tracking-[0.3em] text-white/40 uppercase mt-2">
             Illuminate · Inspire · Achieve

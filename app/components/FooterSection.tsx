@@ -69,7 +69,7 @@ export default function FooterSection() {
               </div>
               <div>
                 <h2 className="font-display text-xl text-white font-semibold">
-                  Horizon Public School
+                  HPS Academy
                 </h2>
                 <p className="font-alt text-xs tracking-[0.25em] text-gold/50 uppercase mt-0.5">
                   Est. 1985 · Affiliated to CBSE, Delhi
@@ -118,7 +118,7 @@ export default function FooterSection() {
               {
                 Icon: Mail,
                 label: 'Write to Us',
-                lines: ['admissions@horizonpublicschool.in', 'info@horizonpublicschool.in'],
+                lines: ['admissions@hpsacademy.in', 'info@hpsacademy.in'],
               },
             ].map(({ Icon, label, lines }) => (
               <div key={label} className="flex flex-col gap-2">
@@ -164,7 +164,7 @@ export default function FooterSection() {
         {/* Bottom bar */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-10">
           <p className="font-alt text-xs text-white/15 tracking-wide">
-            © 2025 Horizon Public School. All rights reserved.
+            © 2025 HPS Academy. All rights reserved.
           </p>
           <div className="flex items-center gap-6">
             {['Privacy Policy', 'Terms of Use', 'RTI', 'Mandatory Disclosure'].map((item) => (

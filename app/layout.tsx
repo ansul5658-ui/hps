@@ -2,12 +2,12 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Horizon Public School | Where Excellence Meets Destiny',
+  title: 'HPS Academy | Where Excellence Meets Destiny',
   description:
-    'Horizon Public School – A legacy of academic excellence, holistic development, and world-class education since 1985. Shaping tomorrow\'s leaders today.',
-  keywords: 'school, education, excellence, academics, admissions, CBSE, HPS, Horizon Public School',
+    'HPS Academy – A legacy of academic excellence, holistic development, and world-class education since 1985. Shaping tomorrow\'s leaders today.',
+  keywords: 'school, education, excellence, academics, admissions, CBSE, HPS, HPS Academy',
   openGraph: {
-    title: 'Horizon Public School',
+    title: 'HPS Academy',
     description: 'A legacy of excellence since 1985.',
     type: 'website',
   },

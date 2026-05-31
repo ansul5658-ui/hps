@@ -133,7 +133,7 @@ export default function StudentLifeSection() {
           </div>
           <h2 className="font-display text-5xl md:text-7xl font-bold text-dark-200 leading-tight">
             Life at{' '}
-            <span className="text-gold-gradient italic">Horizon</span>
+            <span className="text-gold-gradient italic">HPS Academy</span>
           </h2>
           <p className="mt-6 text-dark-400/50 font-body text-lg max-w-xl leading-relaxed">
             School is more than academics. It is where memories are forged,

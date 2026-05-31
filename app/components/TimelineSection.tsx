@@ -7,7 +7,7 @@ const milestones = [
   {
     year: '1985',
     title: 'The Foundation',
-    description: 'Horizon Public School opened its doors with 120 students and 12 dedicated educators, driven by a singular vision: to build excellence from the ground up.',
+    description: 'HPS Academy opened its doors with 120 students and 12 dedicated educators, driven by a singular vision: to build excellence from the ground up.',
     color: '#C8A951',
     icon: '◆',
   },
@@ -27,7 +27,7 @@ const milestones = [
   },
   {
     year: '2005',
-    title: 'New Horizons',
+    title: 'New Campus',
     description: 'A landmark year as our world-class 8-acre campus was inaugurated, housing state-of-the-art labs, auditorium, and sports facilities.',
     color: '#C97A8B',
     icon: '●',
@@ -49,7 +49,7 @@ const milestones = [
   {
     year: '2022',
     title: 'Innovation Hub',
-    description: 'Inaugurated the Horizon Innovation Center — a 10,000 sq ft space dedicated to robotics, AI research, and entrepreneurship.',
+    description: 'Inaugurated the HPS Innovation Center — a 10,000 sq ft space dedicated to robotics, AI research, and entrepreneurship.',
     color: '#7AB4C9',
     icon: '◉',
   },

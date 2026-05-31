@@ -63,7 +63,7 @@ export default function Navigation() {
             </div>
             <div className="hidden sm:block">
               <p className="font-display text-sm text-white font-medium leading-tight">
-                Horizon Public School
+                HPS Academy
               </p>
               <p className="font-alt text-[9px] tracking-[0.25em] text-white/40 uppercase">
                 Est. 1985
@@ -126,7 +126,7 @@ export default function Navigation() {
                 <span className="absolute inset-0 flex items-center justify-center font-display text-xl font-bold text-gold">H</span>
               </div>
               <div>
-                <p className="font-display text-base text-white">Horizon Public School</p>
+                <p className="font-display text-base text-white">HPS Academy</p>
                 <p className="font-alt text-[9px] tracking-widest text-white/40 uppercase">Est. 1985</p>
               </div>
             </div>
