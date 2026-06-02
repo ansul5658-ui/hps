@@ -66,10 +66,15 @@ public/videos/      # drop hero.mp4 here (see its README)
 
 ## ✏️ Customising content
 
-All copy, stats, timeline entries, facilities, testimonials and image URLs
+All copy, stats, timeline entries, facilities, testimonials and image paths
 live in **`lib/data.ts`** — edit there, nothing in the components needs to
-change. Swap the Unsplash placeholders for real campus photography and add a
-`public/videos/hero.mp4` for the full effect.
+change.
+
+Imagery is **fully self-contained**: on-brand SVG gradients in
+`public/images/` (regenerate with `node scripts/gen-placeholders.mjs`). Swap
+them for real campus photography (JPG/WebP) by replacing the files or
+updating the paths in `lib/data.ts`, and drop a `public/videos/hero.mp4` for
+the full hero effect.
 
 ## ⚡ Performance & SEO
 

@@ -63,38 +63,32 @@ export const CAMPUS = [
   {
     title: "Main Building",
     caption: "The heart of the campus",
-    image:
-      "https://images.unsplash.com/photo-1562774053-701939374585?auto=format&fit=crop&w=1600&q=80",
+    image: "/images/campus-main.svg",
   },
   {
     title: "Smart Classes",
     caption: "Where lessons come alive",
-    image:
-      "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?auto=format&fit=crop&w=1600&q=80",
+    image: "/images/campus-smart.svg",
   },
   {
     title: "Science Labs",
     caption: "Curiosity, engineered",
-    image:
-      "https://images.unsplash.com/photo-1532094349884-543bc11b234d?auto=format&fit=crop&w=1600&q=80",
+    image: "/images/campus-science.svg",
   },
   {
     title: "Computer Labs",
     caption: "Coding the future",
-    image:
-      "https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?auto=format&fit=crop&w=1600&q=80",
+    image: "/images/campus-computer.svg",
   },
   {
     title: "Library",
     caption: "A universe of pages",
-    image:
-      "https://images.unsplash.com/photo-1521587760476-6c12a4b040da?auto=format&fit=crop&w=1600&q=80",
+    image: "/images/campus-library.svg",
   },
   {
     title: "Sports Ground",
     caption: "Where champions train",
-    image:
-      "https://images.unsplash.com/photo-1461896836934-ffe607ba8211?auto=format&fit=crop&w=1600&q=80",
+    image: "/images/campus-sports.svg",
   },
 ];
 
@@ -139,31 +133,11 @@ export const FACILITIES = [
 ];
 
 export const STUDENT_LIFE = [
-  {
-    title: "Sports Day",
-    image:
-      "https://images.unsplash.com/photo-1571260899304-425eee4c7efc?auto=format&fit=crop&w=1400&q=80",
-  },
-  {
-    title: "Annual Function",
-    image:
-      "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=1400&q=80",
-  },
-  {
-    title: "Educational Tours",
-    image:
-      "https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=1400&q=80",
-  },
-  {
-    title: "Cultural Activities",
-    image:
-      "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=1400&q=80",
-  },
-  {
-    title: "Science Exhibitions",
-    image:
-      "https://images.unsplash.com/photo-1564981797816-1043664bf78d?auto=format&fit=crop&w=1400&q=80",
-  },
+  { title: "Sports Day", image: "/images/life-sportsday.svg" },
+  { title: "Annual Function", image: "/images/life-annual.svg" },
+  { title: "Educational Tours", image: "/images/life-tours.svg" },
+  { title: "Cultural Activities", image: "/images/life-cultural.svg" },
+  { title: "Science Exhibitions", image: "/images/life-science.svg" },
 ];
 
 export const RESULTS = [

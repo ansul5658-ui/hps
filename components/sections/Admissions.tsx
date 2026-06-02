@@ -22,7 +22,7 @@ export default function Admissions() {
       <motion.div style={{ y, scale }} className="absolute inset-0">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src="https://images.unsplash.com/photo-1427504494785-3a9ca7044f45?auto=format&fit=crop&w=2000&q=80"
+          src="/images/admissions.svg"
           alt="Students learning and participating in activities"
           loading="lazy"
           className="h-full w-full object-cover"
