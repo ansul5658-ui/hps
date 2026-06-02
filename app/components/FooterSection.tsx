@@ -62,22 +62,22 @@ export default function FooterSection() {
           {/* Logo */}
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-4">
-              <div className="relative w-14 h-14">
-                <div className="absolute inset-0 border border-gold/40 rotate-45" />
-                <div className="absolute inset-1 border border-gold/20 rotate-45" />
-                <span className="absolute inset-0 flex items-center justify-center font-display text-2xl font-bold text-gold">H</span>
-              </div>
+              <img
+                src="/hps-logo.svg"
+                alt="HPS Academy Logo"
+                className="w-16 h-16 flex-shrink-0"
+              />
               <div>
                 <h2 className="font-display text-xl text-white font-semibold">
                   HPS Academy
                 </h2>
                 <p className="font-alt text-xs tracking-[0.25em] text-gold/50 uppercase mt-0.5">
-                  Est. 1985 · Affiliated to CBSE, Delhi
+                  Rahara · Est. 1985 · CBSE Affiliated
                 </p>
               </div>
             </div>
             <p className="font-body text-sm text-white/30 max-w-sm leading-relaxed">
-              Illuminate. Inspire. Achieve. Four decades of shaping tomorrow's
+              Giving our students the world. Four decades of shaping tomorrow's
               leaders, one student at a time.
             </p>
 
@@ -108,17 +108,17 @@ export default function FooterSection() {
               {
                 Icon: MapPin,
                 label: 'Visit Us',
-                lines: ['12, Knowledge Park', 'New Delhi – 110 020', 'India'],
+                lines: ['HPS Academy, Rahara', 'North 24 Parganas', 'West Bengal, India'],
               },
               {
                 Icon: Phone,
                 label: 'Call Us',
-                lines: ['+91 11 2345 6789', '+91 11 2345 6790', 'Mon–Sat, 8am–6pm'],
+                lines: ['+91 86848 01773', 'Mon–Sat, 8am–5pm'],
               },
               {
                 Icon: Mail,
                 label: 'Write to Us',
-                lines: ['admissions@hpsacademy.in', 'info@hpsacademy.in'],
+                lines: ['contact@hpsacademy.in'],
               },
             ].map(({ Icon, label, lines }) => (
               <div key={label} className="flex flex-col gap-2">

@@ -54,19 +54,17 @@ export default function Navigation() {
             onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
             className="flex items-center gap-3 group"
           >
-            <div className="relative w-9 h-9">
-              <div className="absolute inset-0 border border-gold/50 rotate-45 group-hover:rotate-[135deg] transition-transform duration-700" />
-              <div className="absolute inset-1 border border-gold/20 rotate-45" />
-              <span className="absolute inset-0 flex items-center justify-center font-display text-lg font-bold text-gold">
-                H
-              </span>
-            </div>
+            <img
+              src="/hps-logo.svg"
+              alt="HPS Academy Logo"
+              className="w-10 h-10 group-hover:scale-110 transition-transform duration-500"
+            />
             <div className="hidden sm:block">
               <p className="font-display text-sm text-white font-medium leading-tight">
                 HPS Academy
               </p>
               <p className="font-alt text-[9px] tracking-[0.25em] text-white/40 uppercase">
-                Est. 1985
+                Rahara · Est. 1985
               </p>
             </div>
           </button>
@@ -121,13 +119,10 @@ export default function Navigation() {
             </button>
 
             <div className="flex items-center gap-3 mb-8">
-              <div className="relative w-10 h-10">
-                <div className="absolute inset-0 border border-gold/50 rotate-45" />
-                <span className="absolute inset-0 flex items-center justify-center font-display text-xl font-bold text-gold">H</span>
-              </div>
+              <img src="/hps-logo.svg" alt="HPS Academy Logo" className="w-12 h-12" />
               <div>
                 <p className="font-display text-base text-white">HPS Academy</p>
-                <p className="font-alt text-[9px] tracking-widest text-white/40 uppercase">Est. 1985</p>
+                <p className="font-alt text-[9px] tracking-widest text-white/40 uppercase">Rahara · Est. 1985</p>
               </div>
             </div>
 

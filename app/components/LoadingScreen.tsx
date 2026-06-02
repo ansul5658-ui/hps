@@ -88,25 +88,20 @@ export default function LoadingScreen({ onComplete }: LoadingScreenProps) {
 
       {/* Center content */}
       <div ref={logoRef} className="relative flex flex-col items-center gap-6">
-        {/* Logo mark */}
-        <div className="relative">
-          <div className="w-24 h-24 border-2 border-gold/40 rotate-45 absolute -inset-2" />
-          <div className="w-20 h-20 border border-gold/20 rotate-45 absolute -inset-0" />
-          <div className="w-20 h-20 flex items-center justify-center relative">
-            <span className="font-display text-4xl font-bold text-gold-gradient select-none">H</span>
-          </div>
-        </div>
+        {/* Logo */}
+        <img
+          src="/hps-logo.svg"
+          alt="HPS Academy"
+          className="w-28 h-28 md:w-32 md:h-32 drop-shadow-2xl"
+        />
 
         {/* School name */}
         <div className="text-center">
-          <p className="font-alt text-xs tracking-[0.4em] text-gold/70 uppercase mb-2">
-            Est. 1985
-          </p>
           <h1 className="font-display text-3xl md:text-4xl text-white font-light tracking-wide">
             HPS Academy
           </h1>
           <p className="font-alt text-xs tracking-[0.3em] text-white/40 uppercase mt-2">
-            Illuminate · Inspire · Achieve
+            giving our students the world
           </p>
         </div>
       </div>
