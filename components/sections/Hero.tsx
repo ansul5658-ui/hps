@@ -69,7 +69,7 @@ export default function Hero() {
           transition={{ delay: 0.6, duration: 0.8 }}
           className="eyebrow mb-6"
         >
-          {SCHOOL.name} · Est. 2001
+          {SCHOOL.name} · Est. {SCHOOL.founded}
         </motion.span>
 
         <h1 className="max-w-5xl font-display text-5xl font-semibold leading-[1.05] text-white sm:text-6xl md:text-7xl lg:text-8xl">

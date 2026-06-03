@@ -59,7 +59,7 @@ export default function Journey() {
         <SectionHeading
           eyebrow="The Journey"
           title="From a single classroom to a legacy"
-          subtitle="Twenty-five years of relentless pursuit — every milestone a chapter in the story of SVM."
+          subtitle="Two decades of relentless pursuit — every milestone a chapter in the story of SVM."
         />
 
         <div className="timeline-list relative mx-auto mt-20 max-w-3xl">

@@ -48,9 +48,17 @@ export default function Preloader() {
             initial={{ opacity: 0, scale: 0.85 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-            className="flex h-24 w-24 items-center justify-center rounded-2xl border border-gold/40 text-3xl font-display font-bold text-gradient-gold"
+            className="relative flex h-28 w-28 items-center justify-center overflow-hidden rounded-full ring-2 ring-gold/40"
           >
-            SVM
+            <span className="absolute inset-0 animate-spin-slow rounded-full bg-[conic-gradient(from_0deg,transparent,rgba(212,175,55,0.5),transparent)]" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/logo.png"
+              alt={`${SCHOOL.name} crest`}
+              width={104}
+              height={104}
+              className="relative h-[104px] w-[104px] rounded-full object-cover"
+            />
           </motion.div>
 
           <p className="mt-6 text-xs uppercase tracking-cinematic text-white/50">

@@ -21,19 +21,26 @@ export default function Footer() {
         {/* Brand */}
         <div className="md:col-span-4">
           <div className="flex items-center gap-3">
-            <span className="flex h-12 w-12 items-center justify-center rounded-xl border border-gold/40 font-display text-lg font-bold text-gradient-gold">
-              SVM
+            <span className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-full ring-1 ring-gold/40">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/logo.png"
+                alt={`${SCHOOL.name} crest`}
+                width={56}
+                height={56}
+                className="h-full w-full object-cover"
+              />
             </span>
             <div>
               <p className="font-display text-lg text-white">{SCHOOL.short}</p>
               <p className="text-xs uppercase tracking-widest text-gold/70">
-                {SCHOOL.name}
+                {SCHOOL.motto}
               </p>
             </div>
           </div>
           <p className="mt-5 max-w-xs text-sm leading-relaxed text-white/55">
             {SCHOOL.tagline}. Nurturing curious minds and courageous hearts
-            since 2001.
+            since {SCHOOL.founded}.
           </p>
           <div className="mt-6 flex gap-3">
             {socials.map((s) => (

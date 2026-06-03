@@ -7,6 +7,8 @@
 export const SCHOOL = {
   name: "Saraswati Vidya Mandir",
   short: "SVM School",
+  motto: "A Community of Learners",
+  founded: 2005,
   tagline: "Excellence in Education, Innovation and Character Building",
   headline: "Where Future Leaders Are Created",
   session: "2026-27",
@@ -33,12 +35,12 @@ export const NAV_LINKS = [
 
 export const TIMELINE = [
   {
-    year: "2001",
+    year: "2005",
     title: "The Foundation",
     body: "Saraswati Vidya Mandir opened its doors with 60 students and a single resolve — to build character before careers.",
   },
   {
-    year: "2008",
+    year: "2010",
     title: "Growing Roots",
     body: "Senior wing established. Science and computer laboratories brought modern inquiry into every classroom.",
   },
@@ -55,7 +57,7 @@ export const TIMELINE = [
   {
     year: "Today",
     title: "A Legacy in Motion",
-    body: "Over 1000 students, 50+ mentors and 25+ years of excellence — and the story is still being written.",
+    body: "Over 1000 students, 50+ mentors and two decades of excellence — and the story is still being written.",
   },
 ];
 
@@ -96,7 +98,7 @@ export const STATS = [
   { value: 1000, suffix: "+", label: "Students" },
   { value: 100, suffix: "%", label: "Board Results" },
   { value: 50, suffix: "+", label: "Faculty Members" },
-  { value: 25, suffix: "+", label: "Years of Excellence" },
+  { value: 20, suffix: "+", label: "Years of Excellence" },
 ];
 
 export const FACILITIES = [

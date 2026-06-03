@@ -47,15 +47,22 @@ export default function Navbar() {
             className="flex items-center gap-3"
             aria-label={`${SCHOOL.short} home`}
           >
-            <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-gold/40 font-display text-lg font-bold text-gradient-gold">
-              SVM
+            <span className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full ring-1 ring-gold/40">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/logo.png"
+                alt={`${SCHOOL.name} crest`}
+                width={44}
+                height={44}
+                className="h-full w-full object-cover"
+              />
             </span>
             <span className="hidden flex-col leading-tight sm:flex">
               <span className="text-sm font-semibold tracking-wide text-white">
                 {SCHOOL.short}
               </span>
               <span className="text-[10px] uppercase tracking-widest text-gold/70">
-                Est. 2001
+                Est. {SCHOOL.founded}
               </span>
             </span>
           </button>
