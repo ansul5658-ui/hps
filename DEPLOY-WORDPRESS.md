@@ -73,6 +73,44 @@ Options 1–2 are better for a flagship site.
 
 ---
 
+## 👉 Your setup: iframe on Hostinger — step by step
+
+You'll (A) host the static site on a Hostinger **subdomain**, then
+(B) embed it in a WordPress page with an iframe.
+
+### A. Host the static files on a subdomain
+1. Build the static files: `npm install && npm run export` → this creates
+   the `out/` folder. (Or use the prebuilt `svm-cinematic-site.zip`.)
+2. Hostinger **hPanel → Domains → Subdomains**. Create one, e.g. `campus`
+   → you get `campus.yourdomain.com`. Note its **document root** folder.
+3. hPanel **Files → File Manager**. Open that subdomain's folder.
+4. Upload the **zip**, then right-click → **Extract** so that `index.html`
+   sits directly in the folder (NOT inside an extra `out/` subfolder).
+5. hPanel **Security → SSL** — make sure SSL is active for the subdomain,
+   then open `https://campus.yourdomain.com` to confirm it works.
+
+### B. Embed it in WordPress
+1. WP Admin → **Pages → Add New** (e.g. title "Welcome"/"Home").
+2. Add a **Custom HTML** block and paste:
+   ```html
+   <iframe src="https://campus.yourdomain.com"
+     title="Saraswati Vidya Mandir"
+     style="display:block;width:100%;height:100vh;border:0;margin:0;"
+     loading="lazy" allowfullscreen></iframe>
+   ```
+3. Pick a **full-width / blank** page template (in the page's settings, or
+   your theme's template options) so there's no sidebar around the iframe.
+4. **Publish**. To make it the homepage: **Settings → Reading → A static
+   page → Homepage = this page**.
+
+### Gotchas
+- Both your WordPress site and the subdomain must be **https** (Hostinger
+  gives free SSL) — otherwise the iframe is blocked as mixed content.
+- 100vh makes it full-screen; the cinematic site scrolls inside the frame.
+- Updating later = re-run `npm run export` and re-upload `out/`.
+
+---
+
 ## Option 4 — Headless WordPress (advanced)
 
 Keep WordPress purely as the content editor and let this Next.js app fetch
