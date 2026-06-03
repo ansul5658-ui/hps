@@ -1,6 +1,7 @@
 "use client";
 
 import Icon from "@/components/ui/Icon";
+import Crest from "@/components/ui/Crest";
 import { NAV_LINKS, SCHOOL } from "@/lib/data";
 
 export default function Footer() {
@@ -21,16 +22,7 @@ export default function Footer() {
         {/* Brand */}
         <div className="md:col-span-4">
           <div className="flex items-center gap-3">
-            <span className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-full ring-1 ring-gold/40">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/logo.png"
-                alt={`${SCHOOL.name} crest`}
-                width={56}
-                height={56}
-                className="h-full w-full object-cover"
-              />
-            </span>
+            <Crest size={56} />
             <div>
               <p className="font-display text-lg text-white">{SCHOOL.short}</p>
               <p className="text-xs uppercase tracking-widest text-gold/70">

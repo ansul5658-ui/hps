@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import type Lenis from "lenis";
+import Crest from "@/components/ui/Crest";
 import { NAV_LINKS, SCHOOL } from "@/lib/data";
 
 export default function Navbar() {
@@ -47,16 +48,7 @@ export default function Navbar() {
             className="flex items-center gap-3"
             aria-label={`${SCHOOL.short} home`}
           >
-            <span className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full ring-1 ring-gold/40">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/logo.png"
-                alt={`${SCHOOL.name} crest`}
-                width={44}
-                height={44}
-                className="h-full w-full object-cover"
-              />
-            </span>
+            <Crest size={44} />
             <span className="hidden flex-col leading-tight sm:flex">
               <span className="text-sm font-semibold tracking-wide text-white">
                 {SCHOOL.short}

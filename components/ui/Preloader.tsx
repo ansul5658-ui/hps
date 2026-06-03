@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import Crest from "@/components/ui/Crest";
 import { SCHOOL } from "@/lib/data";
 
 /**
@@ -48,17 +49,10 @@ export default function Preloader() {
             initial={{ opacity: 0, scale: 0.85 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-            className="relative flex h-28 w-28 items-center justify-center overflow-hidden rounded-full ring-2 ring-gold/40"
+            className="relative flex h-32 w-32 items-center justify-center"
           >
-            <span className="absolute inset-0 animate-spin-slow rounded-full bg-[conic-gradient(from_0deg,transparent,rgba(212,175,55,0.5),transparent)]" />
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/logo.png"
-              alt={`${SCHOOL.name} crest`}
-              width={104}
-              height={104}
-              className="relative h-[104px] w-[104px] rounded-full object-cover"
-            />
+            <span className="absolute inset-0 animate-spin-slow rounded-full bg-[conic-gradient(from_0deg,transparent,rgba(212,175,55,0.6),transparent)]" />
+            <Crest size={108} className="relative" />
           </motion.div>
 
           <p className="mt-6 text-xs uppercase tracking-cinematic text-white/50">
