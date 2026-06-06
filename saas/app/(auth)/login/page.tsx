@@ -39,7 +39,7 @@ export default function LoginPage() {
             <div className="w-10 h-10 bg-gradient-to-br from-violet-600 to-pink-600 rounded-xl flex items-center justify-center">
               <Zap className="w-5 h-5 text-white" />
             </div>
-            <span className="font-bold text-gray-900 text-xl">InstaFlow</span>
+            <span className="font-bold text-gray-900 text-xl">InstaCreato</span>
           </Link>
           <h1 className="text-2xl font-bold text-gray-900">Welcome back</h1>
           <p className="text-gray-500 mt-1">Log in to your account</p>
