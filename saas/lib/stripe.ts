@@ -1,8 +1,18 @@
 import Stripe from 'stripe'
 
-export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2026-05-27.dahlia',
-})
+export function getStripe(): Stripe {
+  return new Stripe(process.env.STRIPE_SECRET_KEY!, {
+    apiVersion: '2026-05-27.dahlia',
+  })
+}
+
+export const stripe = {
+  webhooks: {
+    constructEvent(body: string, sig: string, secret: string) {
+      return getStripe().webhooks.constructEvent(body, sig, secret)
+    },
+  },
+}
 
 export const PLANS = {
   free: {
@@ -41,7 +51,7 @@ export async function createCheckoutSession(
   userId: string,
   userEmail: string
 ) {
-  return stripe.checkout.sessions.create({
+  return getStripe().checkout.sessions.create({
     mode: 'subscription',
     payment_method_types: ['card'],
     customer: customerId || undefined,
@@ -54,7 +64,7 @@ export async function createCheckoutSession(
 }
 
 export async function createPortalSession(customerId: string) {
-  return stripe.billingPortal.sessions.create({
+  return getStripe().billingPortal.sessions.create({
     customer: customerId,
     return_url: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
   })

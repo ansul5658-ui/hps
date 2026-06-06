@@ -3,10 +3,12 @@ import { stripe } from '@/lib/stripe'
 import { createClient } from '@supabase/supabase-js'
 import type Stripe from 'stripe'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+function getSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+}
 
 const PLAN_BY_PRICE: Record<string, string> = {
   [process.env.STRIPE_PRICE_STARTER ?? '']: 'starter',
@@ -27,6 +29,8 @@ export async function POST(request: NextRequest) {
 
   const session = event.data.object as Stripe.Checkout.Session
   const subscription = event.data.object as Stripe.Subscription
+
+  const supabase = getSupabase()
 
   if (event.type === 'checkout.session.completed') {
     const userId = session.metadata?.userId

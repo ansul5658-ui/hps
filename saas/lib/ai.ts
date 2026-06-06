@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 
-const client = new Anthropic()
+function getClient() {
+  return new Anthropic()
+}
 
 export async function generateDmReply(params: {
   incomingMessage: string
@@ -15,7 +17,7 @@ Tone: ${tone}.
 ${influencerContext ? `Context about the influencer: ${influencerContext}` : ''}
 Write a short, natural reply (1-3 sentences). Do not use hashtags. Be genuine.`
 
-  const msg = await client.messages.create({
+  const msg = await getClient().messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 200,
     system: systemPrompt,
@@ -43,7 +45,7 @@ Tone: ${tone}.
 ${postContext ? `Post context: ${postContext}` : ''}
 Write a short reply (1-2 sentences). Be engaging and authentic.`
 
-  const msg = await client.messages.create({
+  const msg = await getClient().messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 150,
     system: systemPrompt,
@@ -66,7 +68,7 @@ export async function generateDmTemplate(params: {
 }): Promise<string> {
   const { trigger, tone, influencerNiche } = params
 
-  const msg = await client.messages.create({
+  const msg = await getClient().messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 250,
     messages: [

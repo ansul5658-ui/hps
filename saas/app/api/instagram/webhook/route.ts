@@ -4,10 +4,12 @@ import { sendDm } from '@/lib/instagram'
 import { generateDmReply } from '@/lib/ai'
 import { interpolateTemplate } from '@/lib/utils'
 
-const supabase = createAdminClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+function getSupabase() {
+  return createAdminClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+}
 
 // Webhook verification
 export async function GET(request: NextRequest) {
@@ -25,6 +27,7 @@ export async function GET(request: NextRequest) {
 // Webhook events
 export async function POST(request: NextRequest) {
   const body = await request.json()
+  const supabase = getSupabase()
 
   for (const entry of body.entry ?? []) {
     const igUserId = entry.id
@@ -39,25 +42,23 @@ export async function POST(request: NextRequest) {
 
     for (const change of entry.changes ?? []) {
       if (change.field === 'messages') {
-        await handleMessage(profile, change.value)
+        await handleMessage(supabase, profile, change.value)
       }
       if (change.field === 'comments') {
-        await handleComment(profile, change.value)
+        await handleComment(supabase, profile, change.value)
       }
     }
 
     for (const messaging of entry.messaging ?? []) {
-      await handleMessage(profile, messaging)
+      await handleMessage(supabase, profile, messaging)
     }
   }
 
   return NextResponse.json({ ok: true })
 }
 
-async function handleMessage(
-  profile: { id: string; instagram_access_token: string; plan: string },
-  event: Record<string, unknown>
-) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleMessage(supabase: any, profile: { id: string; instagram_access_token: string; plan: string }, event: Record<string, unknown>) {
   const senderId = (event.sender as { id?: string })?.id
   if (!senderId) return
 
@@ -101,10 +102,8 @@ async function handleMessage(
   }
 }
 
-async function handleComment(
-  profile: { id: string; instagram_access_token: string },
-  event: Record<string, unknown>
-) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleComment(supabase: any, profile: { id: string; instagram_access_token: string }, event: Record<string, unknown>) {
   const commentText = (event.text as string) ?? ''
   const commentId = event.id as string
   const senderId = (event.from as { id?: string })?.id
