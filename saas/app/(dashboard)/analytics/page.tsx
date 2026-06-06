@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Users, TrendingUp, MessageSquare, Heart } from 'lucide-react'
 import { formatNumber } from '@/lib/utils'
+import { FollowerChart } from '@/components/dashboard/follower-chart'
 
 export default async function AnalyticsPage() {
   const supabase = await createClient()
@@ -95,30 +96,13 @@ export default async function AnalyticsPage() {
         ))}
       </div>
 
-      {/* Growth chart placeholder — replace with recharts when data is available */}
       <Card className="mb-6">
         <CardHeader>
           <CardTitle>Follower Growth (30 days)</CardTitle>
         </CardHeader>
         <CardContent>
           {snapshots && snapshots.length > 1 ? (
-            <div className="h-48 flex items-end gap-1">
-              {snapshots.map((s, i) => {
-                const max = Math.max(...snapshots.map(x => x.followers_count))
-                const min = Math.min(...snapshots.map(x => x.followers_count))
-                const range = max - min || 1
-                const height = ((s.followers_count - min) / range) * 100
-                return (
-                  <div key={i} className="flex-1 flex flex-col justify-end">
-                    <div
-                      className="bg-gradient-to-t from-violet-500 to-violet-300 rounded-t"
-                      style={{ height: `${Math.max(height, 4)}%` }}
-                      title={`${s.followers_count} followers`}
-                    />
-                  </div>
-                )
-              })}
-            </div>
+            <FollowerChart data={snapshots} />
           ) : (
             <div className="h-48 flex items-center justify-center text-gray-400 text-sm">
               Data will appear once your Instagram is connected and syncing.
