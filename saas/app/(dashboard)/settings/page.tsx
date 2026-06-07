@@ -1,25 +1,77 @@
-import { createClient } from '@/lib/supabase/server'
-import { redirect } from 'next/navigation'
+'use client'
+
+import { useState, useEffect } from 'react'
+import { createClient } from '@/lib/supabase/client'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { getOAuthUrl } from '@/lib/instagram'
-import { PLANS } from '@/lib/stripe'
+import { PLANS } from '@/lib/razorpay'
 import { Camera, CreditCard, CheckCircle } from 'lucide-react'
 
-export default async function SettingsPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/login')
+declare global {
+  interface Window {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Razorpay: any
+  }
+}
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', user.id)
-    .single()
+export default function SettingsPage() {
+  const [profile, setProfile] = useState<Record<string, string> | null>(null)
+  const [user, setUser] = useState<{ id: string; email: string } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [upgrading, setUpgrading] = useState<string | null>(null)
+
+  useEffect(() => {
+    async function load() {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) { window.location.href = '/login'; return }
+      setUser({ id: user.id, email: user.email! })
+
+      const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single()
+      setProfile(profile)
+      setLoading(false)
+    }
+    load()
+
+    // Load Razorpay script
+    const script = document.createElement('script')
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    document.head.appendChild(script)
+  }, [])
+
+  async function handleUpgrade(planKey: string) {
+    setUpgrading(planKey)
+    try {
+      const res = await fetch('/api/razorpay/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planKey }),
+      })
+      const { subscriptionId, keyId } = await res.json()
+
+      const options = {
+        key: keyId,
+        subscription_id: subscriptionId,
+        name: 'GrowKarle',
+        description: `${PLANS[planKey as keyof typeof PLANS].name} Plan`,
+        prefill: { email: user?.email },
+        handler: () => {
+          window.location.href = '/dashboard?upgraded=true'
+        },
+      }
+      const rzp = new window.Razorpay(options)
+      rzp.open()
+    } catch {
+      alert('Payment failed. Please try again.')
+    } finally {
+      setUpgrading(null)
+    }
+  }
+
+  if (loading) return <div className="p-8 text-gray-400">Loading...</div>
 
   const currentPlan = profile?.plan ?? 'free'
-  const instagramOAuthUrl = getOAuthUrl()
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -52,14 +104,11 @@ export default async function SettingsPage() {
                   </div>
                 </div>
               </div>
-              <a href={instagramOAuthUrl}>
-                <Button variant="outline" size="sm">Reconnect</Button>
-              </a>
             </div>
           ) : (
             <div className="flex items-center justify-between">
               <p className="text-sm text-gray-500">No Instagram account connected yet.</p>
-              <a href={instagramOAuthUrl}>
+              <a href="/onboarding">
                 <Button variant="gradient" className="gap-2">
                   <Camera className="w-4 h-4" />
                   Connect Instagram
@@ -68,7 +117,7 @@ export default async function SettingsPage() {
             </div>
           )}
           <p className="text-xs text-gray-400 mt-4">
-            Requires an Instagram Business or Creator account. Personal accounts are not supported by the Instagram API.
+            Requires an Instagram Business or Creator account.
           </p>
         </CardContent>
       </Card>
@@ -88,7 +137,7 @@ export default async function SettingsPage() {
               {PLANS[currentPlan as keyof typeof PLANS].name}
             </Badge>
             <span className="text-gray-500 text-sm">
-              ${PLANS[currentPlan as keyof typeof PLANS].price}/month
+              ₹{PLANS[currentPlan as keyof typeof PLANS].price}/month
             </span>
           </div>
 
@@ -101,14 +150,19 @@ export default async function SettingsPage() {
                   className={`p-4 rounded-xl border ${currentPlan === key ? 'border-violet-400 bg-violet-50' : 'border-gray-200'}`}
                 >
                   <div className="font-semibold text-gray-900 mb-1">{plan.name}</div>
-                  <div className="text-lg font-bold text-gray-900 mb-3">${plan.price}<span className="text-xs font-normal text-gray-400">/mo</span></div>
+                  <div className="text-lg font-bold text-gray-900 mb-3">
+                    ₹{plan.price}<span className="text-xs font-normal text-gray-400">/mo</span>
+                  </div>
                   {currentPlan !== key && (
-                    <form action="/api/stripe/checkout" method="POST">
-                      <input type="hidden" name="priceId" value={plan.priceId ?? ''} />
-                      <Button size="sm" variant={key === 'pro' ? 'gradient' : 'outline'} className="w-full" type="submit">
-                        Upgrade
-                      </Button>
-                    </form>
+                    <Button
+                      size="sm"
+                      variant={key === 'pro' ? 'gradient' : 'outline'}
+                      className="w-full"
+                      onClick={() => handleUpgrade(key)}
+                      disabled={upgrading === key}
+                    >
+                      {upgrading === key ? 'Loading...' : 'Upgrade'}
+                    </Button>
                   )}
                   {currentPlan === key && (
                     <div className="text-xs text-violet-600 font-medium">Current plan</div>
@@ -116,12 +170,6 @@ export default async function SettingsPage() {
                 </div>
               ))}
           </div>
-
-          {profile?.stripe_customer_id && (
-            <form action="/api/stripe/portal" method="POST">
-              <Button variant="outline" type="submit">Manage billing →</Button>
-            </form>
-          )}
         </CardContent>
       </Card>
 
@@ -134,7 +182,7 @@ export default async function SettingsPage() {
           <div className="space-y-3">
             <div className="flex justify-between items-center py-2 border-b border-gray-50">
               <span className="text-sm text-gray-500">Email</span>
-              <span className="text-sm font-medium text-gray-900">{user.email}</span>
+              <span className="text-sm font-medium text-gray-900">{user?.email}</span>
             </div>
             <div className="flex justify-between items-center py-2">
               <span className="text-sm text-gray-500">Name</span>
