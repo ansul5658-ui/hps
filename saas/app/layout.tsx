@@ -5,7 +5,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "InstaCreato — Instagram Automation for Influencers",
+  title: "GrowKarle — Instagram Automation for Influencers",
   description: "Auto DMs, AI replies, and analytics for Instagram influencers.",
 };
 

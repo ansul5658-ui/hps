@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic'
 const steps = [
   { icon: Camera, title: 'Connect Instagram', description: 'Link your Business or Creator account via Instagram OAuth.' },
   { icon: MessageSquare, title: 'Create a DM rule', description: 'Set a trigger and write (or AI-generate) your first message.' },
-  { icon: Sparkles, title: 'AI does the rest', description: 'InstaCreato sends personalized DMs and tracks every result.' },
+  { icon: Sparkles, title: 'AI does the rest', description: 'GrowKarle sends personalized DMs and tracks every result.' },
   { icon: BarChart3, title: 'Watch the numbers', description: 'See follower growth, engagement rate, and DM stats in one place.' },
 ]
 
@@ -34,7 +34,7 @@ export default async function OnboardingPage() {
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-pink-50 flex items-center justify-center p-6">
       <div className="max-w-2xl w-full">
         <div className="text-center mb-10">
-          <h1 className="text-3xl font-bold text-gray-900 mb-3">Welcome to InstaCreato!</h1>
+          <h1 className="text-3xl font-bold text-gray-900 mb-3">Welcome to GrowKarle!</h1>
           <p className="text-gray-500 text-lg">You&apos;re one step away from automating your Instagram presence.</p>
         </div>
 
