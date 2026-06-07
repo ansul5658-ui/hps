@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { scrapeProduct, detectStore } from "@/lib/scraper";
-import { normalizeProduct } from "@/lib/openai";
+import { normalizeProduct } from "@/lib/ai";
 import { generateAffiliateUrl } from "@/lib/affiliate";
 import { MOCK_COMPARISON_DATA } from "@/lib/mock-data";
 

@@ -1,16 +1,16 @@
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 
-const globalForOpenAI = globalThis as unknown as {
-  openai: OpenAI | undefined;
+const globalForAnthropic = globalThis as unknown as {
+  anthropic: Anthropic | undefined;
 };
 
-export const openai =
-  globalForOpenAI.openai ??
-  new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY || "sk-placeholder",
+const anthropic =
+  globalForAnthropic.anthropic ??
+  new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY || "",
   });
 
-if (process.env.NODE_ENV !== "production") globalForOpenAI.openai = openai;
+if (process.env.NODE_ENV !== "production") globalForAnthropic.anthropic = anthropic;
 
 export interface NormalizedProduct {
   name: string;
@@ -26,18 +26,16 @@ export async function normalizeProduct(rawData: {
   description?: string;
   specifications?: string;
 }): Promise<NormalizedProduct> {
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.ANTHROPIC_API_KEY) {
     return getMockNormalization(rawData.title);
   }
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 500,
+      system: "You are a product data normalization expert. Extract and normalize product information from raw product data. Return valid JSON only.",
       messages: [
-        {
-          role: "system",
-          content: `You are a product data normalization expert. Extract and normalize product information from raw product data. Return valid JSON only.`,
-        },
         {
           role: "user",
           content: `Normalize this product data and return JSON:
@@ -48,14 +46,16 @@ Specs: ${rawData.specifications || "N/A"}
 Return JSON with: name, brand, model, category, specifications (object), searchTerms (array of 3-5 search queries to find this product on other stores)`,
         },
       ],
-      response_format: { type: "json_object" },
-      max_tokens: 500,
     });
 
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error("Empty response");
+    const block = response.content[0];
+    if (block.type !== "text") throw new Error("Unexpected content type");
 
-    return JSON.parse(content) as NormalizedProduct;
+    const text = block.text.trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON found");
+
+    return JSON.parse(jsonMatch[0]) as NormalizedProduct;
   } catch {
     return getMockNormalization(rawData.title);
   }
@@ -78,7 +78,7 @@ export async function matchProducts(
   baseProduct: NormalizedProduct,
   candidates: Array<{ title: string; store: string; price: number }>
 ): Promise<Array<{ store: string; confidence: number; matched: boolean }>> {
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.ANTHROPIC_API_KEY) {
     return candidates.map((c) => ({
       store: c.store,
       confidence: 85,
@@ -87,13 +87,11 @@ export async function matchProducts(
   }
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 300,
+      system: "You are a product matching expert. Determine if products are identical across different stores. Return valid JSON only.",
       messages: [
-        {
-          role: "system",
-          content: "You are a product matching expert. Determine if products are identical across different stores.",
-        },
         {
           role: "user",
           content: `Base product: ${JSON.stringify(baseProduct)}
@@ -101,17 +99,19 @@ export async function matchProducts(
 Candidates:
 ${candidates.map((c, i) => `${i + 1}. Store: ${c.store}, Title: ${c.title}`).join("\n")}
 
-Return JSON array with { store, confidence (0-100), matched (boolean) } for each candidate.`,
+Return JSON with a "results" array where each item has: store, confidence (0-100), matched (boolean).`,
         },
       ],
-      response_format: { type: "json_object" },
-      max_tokens: 300,
     });
 
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error("Empty response");
+    const block = response.content[0];
+    if (block.type !== "text") throw new Error("Unexpected content type");
 
-    const result = JSON.parse(content) as { results?: Array<{ store: string; confidence: number; matched: boolean }> };
+    const text = block.text.trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON found");
+
+    const result = JSON.parse(jsonMatch[0]) as { results?: Array<{ store: string; confidence: number; matched: boolean }> };
     return result.results || candidates.map((c) => ({ store: c.store, confidence: 75, matched: true }));
   } catch {
     return candidates.map((c) => ({ store: c.store, confidence: 75, matched: true }));
@@ -119,27 +119,26 @@ Return JSON array with { store, confidence (0-100), matched (boolean) } for each
 }
 
 export async function summarizeReviews(reviews: string[]): Promise<string> {
-  if (!process.env.OPENAI_API_KEY || reviews.length === 0) {
+  if (!process.env.ANTHROPIC_API_KEY || reviews.length === 0) {
     return "Reviews indicate generally positive user experience with good value for money.";
   }
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 150,
+      system: "Summarize product reviews in 2-3 sentences highlighting key pros and cons.",
       messages: [
-        {
-          role: "system",
-          content: "Summarize product reviews in 2-3 sentences highlighting key pros and cons.",
-        },
         {
           role: "user",
           content: `Reviews:\n${reviews.slice(0, 10).join("\n---\n")}`,
         },
       ],
-      max_tokens: 150,
     });
 
-    return response.choices[0]?.message?.content || "Unable to summarize reviews.";
+    const block = response.content[0];
+    if (block.type !== "text") return "Unable to summarize reviews.";
+    return block.text || "Unable to summarize reviews.";
   } catch {
     return "Reviews indicate generally positive user experience.";
   }
