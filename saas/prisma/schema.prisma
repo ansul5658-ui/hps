@@ -1,0 +1,193 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  clerkId       String    @unique
+  email         String    @unique
+  name          String?
+  avatar        String?
+  role          UserRole  @default(USER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  watchlists    Watchlist[]
+  clicks        Click[]
+  notifications Notification[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+model Product {
+  id              String    @id @default(cuid())
+  name            String
+  brand           String?
+  model           String?
+  category        String?
+  description     String?
+  imageUrl        String?
+  specifications  Json?
+  normalizedName  String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  variants        ProductVariant[]
+  priceHistory    PriceHistory[]
+  watchlistItems  WatchlistItem[]
+
+  @@map("products")
+}
+
+model Store {
+  id              String    @id @default(cuid())
+  name            String    @unique
+  slug            String    @unique
+  logoUrl         String?
+  baseUrl         String
+  affiliateNetwork String?
+  trackingId      String?
+  commissionRate  Float     @default(0)
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+
+  variants        ProductVariant[]
+  affiliateLinks  AffiliateLink[]
+
+  @@map("stores")
+}
+
+model ProductVariant {
+  id              String    @id @default(cuid())
+  productId       String
+  storeId         String
+  storeProductId  String?
+  title           String
+  price           Float
+  originalPrice   Float?
+  currency        String    @default("INR")
+  inStock         Boolean   @default(true)
+  rating          Float?
+  reviewCount     Int?
+  deliveryDays    Int?
+  deliveryFee     Float?
+  productUrl      String
+  imageUrl        String?
+  lastUpdated     DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  store           Store     @relation(fields: [storeId], references: [id])
+  priceHistory    PriceHistory[]
+  affiliateLinks  AffiliateLink[]
+
+  @@unique([storeId, storeProductId])
+  @@map("product_variants")
+}
+
+model AffiliateLink {
+  id              String    @id @default(cuid())
+  variantId       String
+  storeId         String
+  originalUrl     String
+  affiliateUrl    String
+  trackingCode    String    @unique @default(cuid())
+  commissionRate  Float
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+
+  variant         ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  store           Store     @relation(fields: [storeId], references: [id])
+  clicks          Click[]
+
+  @@map("affiliate_links")
+}
+
+model Click {
+  id              String    @id @default(cuid())
+  affiliateLinkId String
+  userId          String?
+  ipAddress       String?
+  userAgent       String?
+  converted       Boolean   @default(false)
+  revenue         Float?
+  createdAt       DateTime  @default(now())
+
+  affiliateLink   AffiliateLink @relation(fields: [affiliateLinkId], references: [id])
+  user            User?     @relation(fields: [userId], references: [id])
+
+  @@map("clicks")
+}
+
+model PriceHistory {
+  id              String    @id @default(cuid())
+  productId       String
+  variantId       String
+  price           Float
+  currency        String    @default("INR")
+  recordedAt      DateTime  @default(now())
+
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant         ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@map("price_history")
+}
+
+model Watchlist {
+  id          String    @id @default(cuid())
+  userId      String
+  name        String    @default("My Watchlist")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items       WatchlistItem[]
+
+  @@map("watchlists")
+}
+
+model WatchlistItem {
+  id            String    @id @default(cuid())
+  watchlistId   String
+  productId     String
+  targetPrice   Float?
+  createdAt     DateTime  @default(now())
+
+  watchlist     Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  product       Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([watchlistId, productId])
+  @@map("watchlist_items")
+}
+
+model Notification {
+  id          String    @id @default(cuid())
+  userId      String
+  type        NotificationType
+  title       String
+  message     String
+  isRead      Boolean   @default(false)
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+enum NotificationType {
+  PRICE_DROP
+  BACK_IN_STOCK
+  PRICE_ALERT
+  SYSTEM
+}
