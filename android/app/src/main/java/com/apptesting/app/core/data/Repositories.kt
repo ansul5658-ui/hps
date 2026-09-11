@@ -8,18 +8,14 @@ import com.apptesting.app.core.model.Notification
 import com.apptesting.app.core.model.TestAssignment
 import com.apptesting.app.core.model.User
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flowOf
 
 /**
- * Repository interfaces — thin, feature-focused contracts. UI depends on these,
- * not on Firebase. A Firestore-backed implementation of each will be added under
- * `data/firestore/` when Firebase is configured; a fake in-memory implementation
- * can live under `data/fake/` for previews and tests.
+ * Repository contracts. The UI depends on these; concrete implementations
+ * are chosen at composition time (see [ServiceLocator]).
  *
- * The [Stub…] singletons below implement each interface with empty flows so
- * the UI compiles and previews render without any backend. They are the *only*
- * synthetic data in the codebase; they emit nothing that resembles production
- * content — every list is empty, every count is zero.
+ * Phase 2 ships a fully in-memory Mock implementation ([MockRepositories])
+ * so screens can render meaningful state. A Firestore implementation will
+ * replace it later without changing UI code.
  */
 
 interface UserRepository {
@@ -28,22 +24,36 @@ interface UserRepository {
 }
 
 interface AppRepository {
+    /** Apps owned by [userId]. */
     fun observeMyApps(userId: String): Flow<List<AppSubmission>>
-    suspend fun submitForReview(app: AppSubmission): Result<String>
+
+    /** Apps other developers submitted that are available for testing. */
+    fun observeAvailableApps(excludeOwnerId: String): Flow<List<AppSubmission>>
+
+    /** Persist a new submission. Returns the generated id. */
+    suspend fun addApp(app: AppSubmission): Result<String>
 }
 
 interface GroupRepository {
-    fun observeGroupsForUser(userId: String): Flow<List<Group>>
-    fun observeGroupMembers(groupId: String): Flow<List<GroupMember>>
+    fun observeGroups(): Flow<List<Group>>
+    fun observeMembershipFor(userId: String): Flow<List<GroupMember>>
+    suspend fun requestJoin(groupId: String, userId: String): Result<Unit>
+    suspend fun leave(groupId: String, userId: String): Result<Unit>
 }
 
 interface AssignmentRepository {
+    /** Assignments assigned to [userId] across all groups. */
     fun observeAssignmentsForUser(userId: String): Flow<List<TestAssignment>>
+
     /**
-     * Marking an assignment done is server-authoritative: the client requests
-     * completion, a Cloud Function verifies and awards Coins.
+     * Client requests completion; a Cloud Function verifies and awards Coins.
+     * In the mock implementation this just flips the row to `WaitingForVerification`
+     * so the UI transition is visible.
      */
     suspend fun requestCompletion(assignmentId: String): Result<Unit>
+
+    /** Client marks progress locally (e.g. a "check in for today" button in future). */
+    suspend fun recordDayOfTesting(assignmentId: String): Result<Unit>
 }
 
 interface CoinRepository {
@@ -53,37 +63,4 @@ interface CoinRepository {
 interface NotificationRepository {
     fun observeUnread(userId: String): Flow<List<Notification>>
     suspend fun markRead(notificationId: String)
-}
-
-// ----- Stub implementations (compile-time / preview only) -----
-
-object StubUserRepository : UserRepository {
-    override val currentUser: Flow<User?> = flowOf(null)
-    override suspend fun signOut() = Unit
-}
-
-object StubAppRepository : AppRepository {
-    override fun observeMyApps(userId: String): Flow<List<AppSubmission>> = flowOf(emptyList())
-    override suspend fun submitForReview(app: AppSubmission): Result<String> =
-        Result.failure(NotImplementedError("Firebase not configured yet"))
-}
-
-object StubGroupRepository : GroupRepository {
-    override fun observeGroupsForUser(userId: String): Flow<List<Group>> = flowOf(emptyList())
-    override fun observeGroupMembers(groupId: String): Flow<List<GroupMember>> = flowOf(emptyList())
-}
-
-object StubAssignmentRepository : AssignmentRepository {
-    override fun observeAssignmentsForUser(userId: String): Flow<List<TestAssignment>> = flowOf(emptyList())
-    override suspend fun requestCompletion(assignmentId: String): Result<Unit> =
-        Result.failure(NotImplementedError("Firebase not configured yet"))
-}
-
-object StubCoinRepository : CoinRepository {
-    override fun observeTransactions(userId: String): Flow<List<CoinTransaction>> = flowOf(emptyList())
-}
-
-object StubNotificationRepository : NotificationRepository {
-    override fun observeUnread(userId: String): Flow<List<Notification>> = flowOf(emptyList())
-    override suspend fun markRead(notificationId: String) = Unit
 }

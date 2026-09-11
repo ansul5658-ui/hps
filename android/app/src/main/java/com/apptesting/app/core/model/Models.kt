@@ -45,11 +45,16 @@ data class AppSubmission(
     val iconStoragePath: String? = null,
     val playStoreUrl: String = "",
     val optInUrl: String = "",
+    val versionName: String = "",
     val createdAtMillis: Long = 0L,
     /** server-authoritative */
     val approvalStatus: AppApprovalStatus = AppApprovalStatus.PendingReview,
     /** server-authoritative */
     val activeGroupId: String? = null,
+    /** server-authoritative — denormalized count of testers actively assigned */
+    val testerCount: Int = 0,
+    /** server-authoritative — how many testers have finished the required period */
+    val completedTesterCount: Int = 0,
 )
 
 enum class AppApprovalStatus { PendingReview, Approved, Rejected, Archived }
@@ -66,6 +71,12 @@ data class Group(
     val currentMemberCount: Int = 0,
     val createdByUserId: String = "",
     val createdAtMillis: Long = 0L,
+    /**
+     * Google Group email used for Play Console closed testing.
+     * The admin creates and manages the underlying Google Group; this app
+     * only records and organizes participation around it.
+     */
+    val googleGroupEmail: String = "",
 )
 
 enum class GroupVisibility { Open, InviteOnly, Private }
@@ -92,11 +103,18 @@ data class TestAssignment(
     val testerUserId: String = "",
     val assignedAtMillis: Long = 0L,
     val deadlineAtMillis: Long? = null,
+    val daysRequired: Int = 14,
+    /** server-authoritative — driven by tester actions + admin verification */
+    val daysCompleted: Int = 0,
     /** server-authoritative — driven by tester actions + admin verification */
     val status: AssignmentStatus = AssignmentStatus.Ready,
-    /** server-authoritative */
-    val progressPercent: Int = 0,
-)
+    /** server-authoritative — Coin reward awarded on verified completion */
+    val coinReward: Int = 0,
+) {
+    /** Convenience — derived from days rather than a duplicate percentage field. */
+    val progressPercent: Int
+        get() = if (daysRequired <= 0) 0 else (daysCompleted * 100 / daysRequired).coerceIn(0, 100)
+}
 
 enum class AssignmentStatus {
     Ready,

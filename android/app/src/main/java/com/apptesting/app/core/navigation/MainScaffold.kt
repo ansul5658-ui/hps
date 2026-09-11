@@ -49,7 +49,12 @@ fun MainScaffold(
             startDestination = Routes.Home,
             modifier = Modifier.padding(inner),
         ) {
-            composable(Routes.Home) { HomeScreen() }
+            composable(Routes.Home) {
+                HomeScreen(
+                    onGoToTestApps = { switchTab(innerNav, Routes.TestApps) },
+                    onGoToMyApps = { switchTab(innerNav, Routes.MyApps) },
+                )
+            }
             composable(Routes.TestApps) { TestAppsScreen() }
             composable(Routes.MyApps) {
                 MyAppsScreen(onAddApp = { innerNav.navigate(Routes.AddApp) })
@@ -63,6 +68,14 @@ fun MainScaffold(
                 AddAppScreen(onDone = { innerNav.popBackStack() })
             }
         }
+    }
+}
+
+private fun switchTab(navController: NavHostController, route: String) {
+    navController.navigate(route) {
+        popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
     }
 }
 

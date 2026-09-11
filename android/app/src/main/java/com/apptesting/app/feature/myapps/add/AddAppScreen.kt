@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +48,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.R
 
 /**
@@ -57,14 +60,26 @@ import com.apptesting.app.R
  * Storage is wired; final Submit currently just pops the back stack.
  */
 @Composable
-fun AddAppScreen(onDone: () -> Unit) {
+fun AddAppScreen(
+    onDone: () -> Unit,
+    viewModel: AddAppViewModel = viewModel(),
+) {
     var step by rememberSaveable { mutableStateOf(0) }
     var appName by rememberSaveable { mutableStateOf("") }
     var packageName by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
+    var versionName by rememberSaveable { mutableStateOf("") }
     var playUrl by rememberSaveable { mutableStateOf("") }
     var optInUrl by rememberSaveable { mutableStateOf("") }
     var iconPicked by rememberSaveable { mutableStateOf(false) }
+
+    val submitState by viewModel.submitState.collectAsStateWithLifecycle()
+    val submitting = submitState is AddAppViewModel.SubmitState.Submitting
+    val submitError = (submitState as? AddAppViewModel.SubmitState.Error)?.message
+
+    LaunchedEffect(submitState) {
+        if (submitState is AddAppViewModel.SubmitState.Success) onDone()
+    }
 
     val steps = remember {
         listOf(
@@ -108,6 +123,7 @@ fun AddAppScreen(onDone: () -> Unit) {
                         appName = appName, onName = { appName = it },
                         packageName = packageName, onPackage = { packageName = it },
                         description = description, onDescription = { description = it },
+                        versionName = versionName, onVersion = { versionName = it },
                     )
                     1 -> StepPlay(
                         playUrl = playUrl, onPlay = { playUrl = it },
@@ -118,23 +134,32 @@ fun AddAppScreen(onDone: () -> Unit) {
                         appName = appName,
                         packageName = packageName,
                         description = description,
+                        versionName = versionName,
                         playUrl = playUrl,
                         optInUrl = optInUrl,
                         iconPicked = iconPicked,
+                        errorMessage = submitError,
                     )
                 }
             }
             NavBar(
                 step = step,
                 lastStep = steps.lastIndex,
-                canAdvance = canAdvance(step, appName, packageName, playUrl, optInUrl, iconPicked),
+                canAdvance = canAdvance(step, appName, packageName, playUrl, optInUrl, iconPicked) && !submitting,
+                submitting = submitting,
                 onBack = { if (step == 0) onDone() else step-- },
                 onNext = {
-                    if (step < steps.lastIndex) step++
-                    else {
-                        // TODO(firebase): upload icon to Storage, write app doc to Firestore
-                        // in the `apps` collection with status = pendingReview.
-                        onDone()
+                    if (step < steps.lastIndex) {
+                        step++
+                    } else {
+                        viewModel.submit(
+                            appName = appName,
+                            packageName = packageName,
+                            description = description,
+                            versionName = versionName,
+                            playUrl = playUrl,
+                            optInUrl = optInUrl,
+                        )
                     }
                 },
             )
@@ -198,6 +223,7 @@ private fun StepInfo(
     appName: String, onName: (String) -> Unit,
     packageName: String, onPackage: (String) -> Unit,
     description: String, onDescription: (String) -> Unit,
+    versionName: String, onVersion: (String) -> Unit,
 ) {
     Text("App information", style = MaterialTheme.typography.titleLarge)
     Text(
@@ -224,6 +250,15 @@ private fun StepInfo(
             keyboardType = KeyboardType.Ascii,
             imeAction = ImeAction.Next,
         ),
+    )
+    OutlinedTextField(
+        value = versionName,
+        onValueChange = onVersion,
+        label = { Text("Version (optional)") },
+        placeholder = { Text("1.0.0 (1)") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
     )
     OutlinedTextField(
         value = description,
@@ -300,9 +335,11 @@ private fun StepReview(
     appName: String,
     packageName: String,
     description: String,
+    versionName: String,
     playUrl: String,
     optInUrl: String,
     iconPicked: Boolean,
+    errorMessage: String?,
 ) {
     Text("Review", style = MaterialTheme.typography.titleLarge)
     Text(
@@ -312,10 +349,19 @@ private fun StepReview(
     )
     ReviewLine("Name", appName)
     ReviewLine("Package", packageName)
+    ReviewLine("Version", versionName.ifBlank { "1.0.0 (1)" })
     ReviewLine("Description", description)
     ReviewLine("Play Store URL", playUrl)
     ReviewLine("Opt-in URL", optInUrl)
     ReviewLine("Icon", if (iconPicked) "Selected" else "Not selected")
+    if (errorMessage != null) {
+        Spacer(Modifier.size(8.dp))
+        Text(
+            text = errorMessage,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
 }
 
 @Composable
@@ -339,6 +385,7 @@ private fun NavBar(
     step: Int,
     lastStep: Int,
     canAdvance: Boolean,
+    submitting: Boolean,
     onBack: () -> Unit,
     onNext: () -> Unit,
 ) {
@@ -350,6 +397,7 @@ private fun NavBar(
     ) {
         OutlinedButton(
             onClick = onBack,
+            enabled = !submitting,
             modifier = Modifier.weight(1f).height(52.dp),
             shape = MaterialTheme.shapes.large,
         ) {
@@ -361,7 +409,13 @@ private fun NavBar(
             modifier = Modifier.weight(1f).height(52.dp),
             shape = MaterialTheme.shapes.large,
         ) {
-            Text(if (step == lastStep) stringResource(R.string.action_submit) else stringResource(R.string.action_next))
+            Text(
+                text = when {
+                    submitting -> "Submitting…"
+                    step == lastStep -> stringResource(R.string.action_submit)
+                    else -> stringResource(R.string.action_next)
+                },
+            )
         }
     }
 }

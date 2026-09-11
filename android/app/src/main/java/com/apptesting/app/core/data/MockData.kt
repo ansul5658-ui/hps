@@ -1,0 +1,348 @@
+package com.apptesting.app.core.data
+
+import com.apptesting.app.core.model.AppApprovalStatus
+import com.apptesting.app.core.model.AppSubmission
+import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.CoinTransaction
+import com.apptesting.app.core.model.CoinTransactionKind
+import com.apptesting.app.core.model.Group
+import com.apptesting.app.core.model.GroupMember
+import com.apptesting.app.core.model.GroupMemberRole
+import com.apptesting.app.core.model.GroupState
+import com.apptesting.app.core.model.GroupVisibility
+import com.apptesting.app.core.model.Notification
+import com.apptesting.app.core.model.TestAssignment
+import com.apptesting.app.core.model.User
+import com.apptesting.app.core.model.UserRole
+import kotlinx.coroutines.flow.MutableStateFlow
+import java.util.UUID
+
+/**
+ * In-memory dataset that powers the app before Firebase is wired.
+ *
+ * Contents are fictional — placeholder app names, placeholder group emails.
+ * There is no personal data of any real user; the "current user" is a
+ * neutral demo account. Everything is held in [MutableStateFlow]s so screens
+ * observing it react immediately when the mock repositories mutate the store.
+ */
+internal class MockStore {
+
+    /** The signed-in user for the mock session. Nullable so sign-out can clear it. */
+    val currentUser = MutableStateFlow<User?>(
+        User(
+            id = "u_me",
+            displayName = "Developer",
+            email = "developer@example.com",
+            createdAtMillis = daysAgo(60),
+            termsAcceptedAtMillis = daysAgo(60),
+            coinBalance = 240,
+            trustScore = 72,
+            role = UserRole.Member,
+        ),
+    )
+
+    /** Groups the admin has created. */
+    val groups = MutableStateFlow(
+        listOf(
+            Group(
+                id = "g_beta",
+                name = "AppTesting Beta Group",
+                summary = "Weekly rotation for early-stage apps in closed testing.",
+                rules = "Test for the full 14-day period. Provide honest feedback.",
+                visibility = GroupVisibility.Open,
+                state = GroupState.Active,
+                memberCap = 40,
+                currentMemberCount = 28,
+                createdByUserId = "u_admin",
+                createdAtMillis = daysAgo(45),
+                googleGroupEmail = "apptesting-beta@googlegroups.com",
+            ),
+            Group(
+                id = "g_launch",
+                name = "New App Launch",
+                summary = "Prepare newly submitted apps for their first Play Store release.",
+                rules = "Install through the opt-in link and use the app daily.",
+                visibility = GroupVisibility.Open,
+                state = GroupState.Open,
+                memberCap = 20,
+                currentMemberCount = 12,
+                createdByUserId = "u_admin",
+                createdAtMillis = daysAgo(20),
+                googleGroupEmail = "apptesting-launch@googlegroups.com",
+            ),
+            Group(
+                id = "g_rotation",
+                name = "Weekly Rotation",
+                summary = "Continuous testing pool. New apps added every Monday.",
+                rules = "Complete at least two assignments per rotation.",
+                visibility = GroupVisibility.Open,
+                state = GroupState.Full,
+                memberCap = 30,
+                currentMemberCount = 30,
+                createdByUserId = "u_admin",
+                createdAtMillis = daysAgo(90),
+                googleGroupEmail = "apptesting-rotation@googlegroups.com",
+            ),
+            Group(
+                id = "g_pro",
+                name = "Trusted Testers",
+                summary = "Invite-only group for members with a Trust Score above 90.",
+                rules = "Provide detailed reports. Reserved for experienced testers.",
+                visibility = GroupVisibility.InviteOnly,
+                state = GroupState.Active,
+                memberCap = 15,
+                currentMemberCount = 9,
+                createdByUserId = "u_admin",
+                createdAtMillis = daysAgo(30),
+                googleGroupEmail = "apptesting-trusted@googlegroups.com",
+            ),
+        ),
+    )
+
+    /** Current user's memberships. Starts as a single active membership. */
+    val memberships = MutableStateFlow(
+        listOf(
+            GroupMember(
+                id = "gm_me_beta",
+                groupId = "g_beta",
+                userId = "u_me",
+                joinedAtMillis = daysAgo(30),
+                role = GroupMemberRole.Member,
+                assignmentsCompleted = 6,
+            ),
+        ),
+    )
+
+    /** Apps — a mix owned by the current user and other developers. */
+    val apps = MutableStateFlow(
+        listOf(
+            // Owned by "me"
+            AppSubmission(
+                id = "app_taskforge",
+                ownerUserId = "u_me",
+                name = "TaskForge",
+                packageName = "com.example.taskforge",
+                description = "A focused productivity app for engineers who plan their week in tasks.",
+                versionName = "1.2.0 (14)",
+                playStoreUrl = "https://play.google.com/store/apps/details?id=com.example.taskforge",
+                optInUrl = "https://play.google.com/apps/testing/com.example.taskforge",
+                createdAtMillis = daysAgo(21),
+                approvalStatus = AppApprovalStatus.Approved,
+                activeGroupId = "g_beta",
+                testerCount = 12,
+                completedTesterCount = 4,
+            ),
+            AppSubmission(
+                id = "app_moodjot",
+                ownerUserId = "u_me",
+                name = "MoodJot",
+                packageName = "com.example.moodjot",
+                description = "Tiny mood journal that fits in a widget.",
+                versionName = "0.9.1 (9)",
+                playStoreUrl = "https://play.google.com/store/apps/details?id=com.example.moodjot",
+                optInUrl = "https://play.google.com/apps/testing/com.example.moodjot",
+                createdAtMillis = daysAgo(6),
+                approvalStatus = AppApprovalStatus.PendingReview,
+                activeGroupId = null,
+                testerCount = 0,
+                completedTesterCount = 0,
+            ),
+            // Owned by other developers — available for testing
+            AppSubmission(
+                id = "app_bytereader",
+                ownerUserId = "u_dev_2",
+                name = "ByteReader",
+                packageName = "com.example.bytereader",
+                description = "Minimal, keyboard-driven RSS reader for developers.",
+                versionName = "2.1.0 (21)",
+                playStoreUrl = "https://play.google.com/store/apps/details?id=com.example.bytereader",
+                optInUrl = "https://play.google.com/apps/testing/com.example.bytereader",
+                createdAtMillis = daysAgo(10),
+                approvalStatus = AppApprovalStatus.Approved,
+                activeGroupId = "g_beta",
+                testerCount = 8,
+                completedTesterCount = 3,
+            ),
+            AppSubmission(
+                id = "app_pixelpacker",
+                ownerUserId = "u_dev_3",
+                name = "PixelPacker",
+                packageName = "com.example.pixelpacker",
+                description = "One-tap image optimizer for release-ready screenshots.",
+                versionName = "1.0.4 (4)",
+                playStoreUrl = "https://play.google.com/store/apps/details?id=com.example.pixelpacker",
+                optInUrl = "https://play.google.com/apps/testing/com.example.pixelpacker",
+                createdAtMillis = daysAgo(5),
+                approvalStatus = AppApprovalStatus.Approved,
+                activeGroupId = "g_launch",
+                testerCount = 6,
+                completedTesterCount = 1,
+            ),
+            AppSubmission(
+                id = "app_greenloop",
+                ownerUserId = "u_dev_4",
+                name = "GreenLoop",
+                packageName = "com.example.greenloop",
+                description = "Tracks household recycling and shows weekly diversion stats.",
+                versionName = "0.7.3 (7)",
+                playStoreUrl = "https://play.google.com/store/apps/details?id=com.example.greenloop",
+                optInUrl = "https://play.google.com/apps/testing/com.example.greenloop",
+                createdAtMillis = daysAgo(15),
+                approvalStatus = AppApprovalStatus.Approved,
+                activeGroupId = "g_launch",
+                testerCount = 4,
+                completedTesterCount = 0,
+            ),
+            AppSubmission(
+                id = "app_fitpulse",
+                ownerUserId = "u_dev_5",
+                name = "FitPulse",
+                packageName = "com.example.fitpulse",
+                description = "Heart-rate variability trainer with breath-pacing.",
+                versionName = "1.4.1 (17)",
+                playStoreUrl = "https://play.google.com/store/apps/details?id=com.example.fitpulse",
+                optInUrl = "https://play.google.com/apps/testing/com.example.fitpulse",
+                createdAtMillis = daysAgo(3),
+                approvalStatus = AppApprovalStatus.Approved,
+                activeGroupId = "g_rotation",
+                testerCount = 14,
+                completedTesterCount = 5,
+            ),
+        ),
+    )
+
+    /** Current user's testing assignments. */
+    val assignments = MutableStateFlow(
+        listOf(
+            TestAssignment(
+                id = "as_bytereader_me",
+                groupId = "g_beta",
+                appId = "app_bytereader",
+                testerUserId = "u_me",
+                assignedAtMillis = daysAgo(7),
+                deadlineAtMillis = daysFromNow(7),
+                daysRequired = 14,
+                daysCompleted = 7,
+                status = AssignmentStatus.InProgress,
+                coinReward = 50,
+            ),
+            TestAssignment(
+                id = "as_pixelpacker_me",
+                groupId = "g_beta",
+                appId = "app_pixelpacker",
+                testerUserId = "u_me",
+                assignedAtMillis = daysAgo(2),
+                deadlineAtMillis = daysFromNow(12),
+                daysRequired = 14,
+                daysCompleted = 2,
+                status = AssignmentStatus.InProgress,
+                coinReward = 50,
+            ),
+            TestAssignment(
+                id = "as_greenloop_me",
+                groupId = "g_beta",
+                appId = "app_greenloop",
+                testerUserId = "u_me",
+                assignedAtMillis = daysAgo(0),
+                deadlineAtMillis = daysFromNow(14),
+                daysRequired = 14,
+                daysCompleted = 0,
+                status = AssignmentStatus.Ready,
+                coinReward = 50,
+            ),
+            TestAssignment(
+                id = "as_fitpulse_me",
+                groupId = "g_beta",
+                appId = "app_fitpulse",
+                testerUserId = "u_me",
+                assignedAtMillis = daysAgo(20),
+                deadlineAtMillis = daysAgo(6),
+                daysRequired = 14,
+                daysCompleted = 14,
+                status = AssignmentStatus.Completed,
+                coinReward = 50,
+            ),
+            TestAssignment(
+                id = "as_taskforge_verify",
+                groupId = "g_beta",
+                appId = "app_taskforge",
+                testerUserId = "u_me",
+                assignedAtMillis = daysAgo(16),
+                deadlineAtMillis = daysAgo(2),
+                daysRequired = 14,
+                daysCompleted = 14,
+                status = AssignmentStatus.WaitingForVerification,
+                coinReward = 50,
+            ),
+        ),
+    )
+
+    /** Coin ledger for the current user. */
+    val transactions = MutableStateFlow(
+        listOf(
+            CoinTransaction(
+                id = "ct_1",
+                userId = "u_me",
+                amount = 50,
+                kind = CoinTransactionKind.Earn,
+                reason = "Completed FitPulse testing",
+                relatedAssignmentId = "as_fitpulse_me",
+                createdAtMillis = daysAgo(6),
+            ),
+            CoinTransaction(
+                id = "ct_2",
+                userId = "u_me",
+                amount = 30,
+                kind = CoinTransactionKind.Bonus,
+                reason = "First completed assignment bonus",
+                createdAtMillis = daysAgo(28),
+            ),
+            CoinTransaction(
+                id = "ct_3",
+                userId = "u_me",
+                amount = 50,
+                kind = CoinTransactionKind.Earn,
+                reason = "Completed ByteReader testing",
+                createdAtMillis = daysAgo(35),
+            ),
+            CoinTransaction(
+                id = "ct_4",
+                userId = "u_me",
+                amount = 100,
+                kind = CoinTransactionKind.Spend,
+                reason = "Requested testers for TaskForge",
+                createdAtMillis = daysAgo(21),
+            ),
+        ),
+    )
+
+    /** Current user's notifications. */
+    val notifications = MutableStateFlow(
+        listOf(
+            Notification(
+                id = "n_1",
+                userId = "u_me",
+                title = "TaskForge is under review",
+                body = "An administrator will confirm testing eligibility soon.",
+                createdAtMillis = daysAgo(1),
+            ),
+            Notification(
+                id = "n_2",
+                userId = "u_me",
+                title = "New assignment: GreenLoop",
+                body = "Test this app for 14 days to earn 50 Coins.",
+                createdAtMillis = daysAgo(0),
+            ),
+        ),
+    )
+
+    // -- Helpers ----------------------------------------------------------------
+
+    fun newId(prefix: String): String = "${prefix}_${UUID.randomUUID().toString().take(8)}"
+
+    private fun daysAgo(days: Int): Long =
+        System.currentTimeMillis() - days.toLong() * 24 * 60 * 60 * 1000
+
+    private fun daysFromNow(days: Int): Long =
+        System.currentTimeMillis() + days.toLong() * 24 * 60 * 60 * 1000
+}

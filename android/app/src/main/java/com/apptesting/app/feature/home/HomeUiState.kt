@@ -1,50 +1,42 @@
 package com.apptesting.app.feature.home
 
 import androidx.compose.runtime.Immutable
+import com.apptesting.app.core.model.AssignmentStatus
 
 /**
  * View state for the Home dashboard.
- *
- * Everything is nullable / empty by default. Real values arrive once
- * repositories are wired to Firebase — see [HomeViewModel]. We deliberately
- * do NOT seed fake data here; empty states are rendered honestly.
+ * The screen renders one of three top-level cases: [Loading], [Error], [Content].
  */
-@Immutable
-data class HomeUiState(
-    val isLoading: Boolean = true,
-    val displayName: String? = null,
-    val coinBalance: Int? = null,
-    val trustScore: Int? = null,
-    val trustBand: TrustBand? = null,
-    val todayCompleted: Int = 0,
-    val todayTarget: Int = 0,
-    val assignmentsRemaining: Int = 0,
-    val myAppsCount: Int = 0,
-    val myAppsInReview: Int = 0,
-    val activeGroup: ActiveGroupSummary? = null,
-    val recentActivity: List<ActivityItem> = emptyList(),
-    val unreadNotifications: Int = 0,
-) {
-    val todayProgress: Float?
-        get() = if (todayTarget > 0) todayCompleted.toFloat() / todayTarget else null
+sealed interface HomeUiState {
+    object Loading : HomeUiState
+    data class Error(val message: String) : HomeUiState
+
+    @Immutable
+    data class Content(
+        val displayName: String,
+        val coinBalance: Int,
+        val trustScore: Int,
+        val appsSubmitted: Int,
+        val appsInReview: Int,
+        val testingTasks: Int,
+        val completedTests: Int,
+        val currentGroupName: String?,
+        val currentGroupEmail: String?,
+        val currentAssignments: List<HomeAssignmentRow>,
+        val unreadNotifications: Int,
+    ) : HomeUiState
 }
 
 @Immutable
-data class ActiveGroupSummary(
+data class HomeAssignmentRow(
     val id: String,
-    val name: String,
-    val memberCount: Int,
-    val progressPercent: Int, // 0..100
-)
-
-@Immutable
-data class ActivityItem(
-    val id: String,
-    val title: String,
-    val subtitle: String,
-    val kind: ActivityKind,
-)
-
-enum class ActivityKind { AssignmentCompleted, CoinsEarned, AppApproved, JoinedGroup, Announcement }
-
-enum class TrustBand { New, Developing, Trusted, Elite }
+    val appId: String,
+    val appName: String,
+    val status: AssignmentStatus,
+    val daysCompleted: Int,
+    val daysRequired: Int,
+    val coinReward: Int,
+) {
+    val progress: Float
+        get() = if (daysRequired <= 0) 0f else daysCompleted.toFloat() / daysRequired
+}

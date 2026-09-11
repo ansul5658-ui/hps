@@ -18,10 +18,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
-import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CardGiftcard
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.EmojiEvents
+import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Savings
@@ -30,10 +29,12 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -43,27 +44,50 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.R
-import com.apptesting.app.core.designsystem.component.ProgressCard
+import com.apptesting.app.core.designsystem.component.AppIconAvatar
+import com.apptesting.app.core.designsystem.component.ErrorState
+import com.apptesting.app.core.designsystem.component.LoadingState
 import com.apptesting.app.core.designsystem.component.SectionHeader
 import com.apptesting.app.core.designsystem.component.StatCard
+import com.apptesting.app.core.designsystem.component.StatusPill
+import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.designsystem.theme.AppTestingTheme
+import com.apptesting.app.core.model.AssignmentStatus
 import java.util.Calendar
 
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel = viewModel(),
+    onGoToTestApps: () -> Unit = {},
+    onGoToMyApps: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    HomeContent(state = state)
+    when (val s = state) {
+        HomeUiState.Loading -> LoadingState(caption = "Loading your dashboard…")
+        is HomeUiState.Error -> ErrorState(
+            title = "Couldn't load your dashboard",
+            message = s.message,
+        )
+        is HomeUiState.Content -> HomeContent(
+            state = s,
+            onGoToTestApps = onGoToTestApps,
+            onGoToMyApps = onGoToMyApps,
+        )
+    }
 }
 
 @Composable
-private fun HomeContent(state: HomeUiState) {
+private fun HomeContent(
+    state: HomeUiState.Content,
+    onGoToTestApps: () -> Unit,
+    onGoToMyApps: () -> Unit,
+) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -81,7 +105,7 @@ private fun HomeContent(state: HomeUiState) {
                 StatCard(
                     icon = Icons.Rounded.Savings,
                     label = stringResource(R.string.home_coin_balance),
-                    value = state.coinBalance?.toString() ?: "—",
+                    value = state.coinBalance.toString(),
                     accent = MaterialTheme.colorScheme.tertiary,
                     accentContainer = MaterialTheme.colorScheme.tertiaryContainer,
                     modifier = Modifier.weight(1f),
@@ -89,8 +113,8 @@ private fun HomeContent(state: HomeUiState) {
                 StatCard(
                     icon = Icons.Rounded.Verified,
                     label = stringResource(R.string.home_trust_score),
-                    value = state.trustScore?.toString() ?: "—",
-                    trailing = state.trustBand?.name,
+                    value = state.trustScore.toString(),
+                    trailing = trustBandLabel(state.trustScore),
                     accent = MaterialTheme.colorScheme.secondary,
                     accentContainer = MaterialTheme.colorScheme.secondaryContainer,
                     modifier = Modifier.weight(1f),
@@ -99,15 +123,25 @@ private fun HomeContent(state: HomeUiState) {
         }
 
         item {
-            ProgressCard(
-                title = stringResource(R.string.home_today_progress),
-                subtitle = if (state.todayTarget == 0) {
-                    "No assignments queued for today."
-                } else {
-                    "${state.todayCompleted} of ${state.todayTarget} completed today"
-                },
-                progress = state.todayProgress,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                StatCard(
+                    icon = Icons.Rounded.Apps,
+                    label = "Apps submitted",
+                    value = state.appsSubmitted.toString(),
+                    trailing = if (state.appsInReview > 0) "${state.appsInReview} in review" else null,
+                    modifier = Modifier.weight(1f),
+                )
+                StatCard(
+                    icon = Icons.Rounded.CardGiftcard,
+                    label = "Testing tasks",
+                    value = state.testingTasks.toString(),
+                    trailing = if (state.completedTests > 0) "${state.completedTests} done" else null,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
 
         item {
@@ -115,38 +149,54 @@ private fun HomeContent(state: HomeUiState) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                StatCard(
-                    icon = Icons.Rounded.CardGiftcard,
-                    label = stringResource(R.string.home_assignments_remaining),
-                    value = state.assignmentsRemaining.toString(),
-                    modifier = Modifier.weight(1f),
-                )
-                StatCard(
-                    icon = Icons.Rounded.Apps,
-                    label = stringResource(R.string.home_my_apps_summary),
-                    value = state.myAppsCount.toString(),
-                    trailing = if (state.myAppsInReview > 0) "${state.myAppsInReview} in review" else null,
-                    modifier = Modifier.weight(1f),
-                )
+                FilledTonalButton(
+                    onClick = onGoToMyApps,
+                    modifier = Modifier.weight(1f).height(52.dp),
+                    shape = MaterialTheme.shapes.large,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Apps,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Manage my apps")
+                }
+                OutlinedButton(
+                    onClick = onGoToTestApps,
+                    modifier = Modifier.weight(1f).height(52.dp),
+                    shape = MaterialTheme.shapes.large,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CardGiftcard,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Find tests")
+                }
             }
         }
 
         item {
             SectionHeader(title = stringResource(R.string.home_active_group))
             Spacer(Modifier.height(8.dp))
-            ActiveGroupCard(state.activeGroup)
+            ActiveGroupCard(state.currentGroupName, state.currentGroupEmail)
         }
 
         item {
-            SectionHeader(title = stringResource(R.string.home_recent_activity))
+            SectionHeader(
+                title = "Current assignments",
+                onSeeAll = if (state.currentAssignments.isNotEmpty()) onGoToTestApps else null,
+            )
             Spacer(Modifier.height(8.dp))
         }
 
-        if (state.recentActivity.isEmpty()) {
-            item { RecentActivityEmpty() }
+        if (state.currentAssignments.isEmpty()) {
+            item { EmptyAssignmentsCard(onGoToTestApps = onGoToTestApps) }
         } else {
-            items(state.recentActivity, key = { it.id }) { item ->
-                ActivityRow(item)
+            items(state.currentAssignments, key = { it.id }) { row ->
+                AssignmentPreviewRow(row = row)
             }
         }
 
@@ -155,7 +205,7 @@ private fun HomeContent(state: HomeUiState) {
 }
 
 @Composable
-private fun HeaderBar(displayName: String?, unread: Int) {
+private fun HeaderBar(displayName: String, unread: Int) {
     val greeting = greetingForHour(Calendar.getInstance().get(Calendar.HOUR_OF_DAY))
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -169,7 +219,7 @@ private fun HeaderBar(displayName: String?, unread: Int) {
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                text = displayName ?: "Welcome",
+                text = displayName,
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onBackground,
             )
@@ -195,14 +245,14 @@ private fun HeaderBar(displayName: String?, unread: Int) {
 }
 
 @Composable
-private fun ActiveGroupCard(group: ActiveGroupSummary?) {
+private fun ActiveGroupCard(name: String?, email: String?) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        if (group == null) {
+        if (name == null) {
             Row(
                 modifier = Modifier.padding(20.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -215,7 +265,6 @@ private fun ActiveGroupCard(group: ActiveGroupSummary?) {
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
-                    Spacer(Modifier.height(2.dp))
                     Text(
                         text = "Groups organize testers and rotations. Discover one from the Groups tab.",
                         style = MaterialTheme.typography.bodySmall,
@@ -230,100 +279,104 @@ private fun ActiveGroupCard(group: ActiveGroupSummary?) {
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            text = group.name,
+                            text = name,
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
-                        Text(
-                            text = "${group.memberCount} members",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        if (email != null && email.isNotBlank()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Email,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = email,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
                     }
-                    Text(
-                        text = "${group.progressPercent}%",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
+                    StatusPill(text = "Active", tone = StatusTone.Success)
                 }
-                Spacer(Modifier.height(12.dp))
-                LinearProgressIndicator(
-                    progress = { group.progressPercent / 100f },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(8.dp),
-                    strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                    color = MaterialTheme.colorScheme.primary,
-                )
             }
         }
     }
 }
 
 @Composable
-private fun RecentActivityEmpty() {
+private fun EmptyAssignmentsCard(onGoToTestApps: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Row(
-            modifier = Modifier.padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RoundIcon(Icons.Rounded.Bolt)
-            Spacer(Modifier.width(14.dp))
-            Column {
-                Text(
-                    text = "Nothing here yet",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = "Your recent testing activity will appear here.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        Column(Modifier.padding(20.dp)) {
+            Text(
+                text = "No open assignments",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Pick an app to test and start earning Coins.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(16.dp))
+            FilledTonalButton(
+                onClick = onGoToTestApps,
+                shape = MaterialTheme.shapes.large,
+            ) {
+                Text("Browse test apps")
             }
         }
     }
 }
 
 @Composable
-private fun ActivityRow(item: ActivityItem) {
-    val icon = when (item.kind) {
-        ActivityKind.AssignmentCompleted -> Icons.Rounded.CheckCircle
-        ActivityKind.CoinsEarned -> Icons.Rounded.Savings
-        ActivityKind.AppApproved -> Icons.Rounded.Verified
-        ActivityKind.JoinedGroup -> Icons.Rounded.Groups
-        ActivityKind.Announcement -> Icons.Rounded.EmojiEvents
-    }
+private fun AssignmentPreviewRow(row: HomeAssignmentRow) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
+        shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RoundIcon(icon)
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = item.subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AppIconAvatar(seed = row.appId, label = row.appName)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = row.appName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "${row.daysCompleted} of ${row.daysRequired} days · ${row.coinReward} Coins",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                StatusPill(
+                    text = assignmentStatusLabel(row.status),
+                    tone = assignmentStatusTone(row.status),
                 )
             }
+            Spacer(Modifier.height(12.dp))
+            LinearProgressIndicator(
+                progress = { row.progress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(),
+                strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }
@@ -353,18 +406,55 @@ private fun greetingForHour(h: Int): Int = when (h) {
     else -> R.string.home_greeting_night
 }
 
-@Preview(name = "Home – light", showBackground = true)
-@Composable
-private fun HomeContentPreviewLight() {
-    AppTestingTheme(darkTheme = false) {
-        HomeContent(state = HomeUiState(isLoading = false, displayName = "Ansul"))
-    }
+private fun trustBandLabel(score: Int): String = when {
+    score >= 90 -> "Elite"
+    score >= 60 -> "Trusted"
+    score >= 30 -> "Developing"
+    else -> "New"
 }
 
-@Preview(name = "Home – dark", showBackground = true)
+internal fun assignmentStatusLabel(status: AssignmentStatus): String = when (status) {
+    AssignmentStatus.Ready -> "Ready"
+    AssignmentStatus.InProgress -> "In progress"
+    AssignmentStatus.WaitingForVerification -> "Waiting"
+    AssignmentStatus.Completed -> "Completed"
+    AssignmentStatus.Missed -> "Missed"
+}
+
+internal fun assignmentStatusTone(status: AssignmentStatus): StatusTone = when (status) {
+    AssignmentStatus.Ready -> StatusTone.Info
+    AssignmentStatus.InProgress -> StatusTone.Success
+    AssignmentStatus.WaitingForVerification -> StatusTone.Warning
+    AssignmentStatus.Completed -> StatusTone.Neutral
+    AssignmentStatus.Missed -> StatusTone.Danger
+}
+
+@Preview(name = "Home – content", showBackground = true)
 @Composable
-private fun HomeContentPreviewDark() {
-    AppTestingTheme(darkTheme = true) {
-        HomeContent(state = HomeUiState(isLoading = false, displayName = "Ansul"))
+private fun HomeContentPreview() {
+    AppTestingTheme {
+        HomeContent(
+            state = HomeUiState.Content(
+                displayName = "Developer",
+                coinBalance = 240,
+                trustScore = 72,
+                appsSubmitted = 2,
+                appsInReview = 1,
+                testingTasks = 3,
+                completedTests = 6,
+                currentGroupName = "AppTesting Beta Group",
+                currentGroupEmail = "apptesting-beta@googlegroups.com",
+                currentAssignments = listOf(
+                    HomeAssignmentRow(
+                        id = "a1", appId = "app_bytereader", appName = "ByteReader",
+                        status = AssignmentStatus.InProgress,
+                        daysCompleted = 7, daysRequired = 14, coinReward = 50,
+                    ),
+                ),
+                unreadNotifications = 2,
+            ),
+            onGoToTestApps = {},
+            onGoToMyApps = {},
+        )
     }
 }
