@@ -1,0 +1,58 @@
+<resources>
+    <string name="app_name">AppTesting</string>
+    <string name="app_tagline">Developers Testing Developers\' Apps</string>
+
+    <!-- Auth -->
+    <string name="auth_welcome_title">Welcome to AppTesting</string>
+    <string name="auth_welcome_subtitle">A community where developers help each other test Android apps and grow together.</string>
+    <string name="auth_sign_in_google">Continue with Google</string>
+    <string name="auth_terms_prefix">By continuing, you agree to our</string>
+    <string name="auth_terms">Terms of Service</string>
+    <string name="auth_and">and</string>
+    <string name="auth_privacy">Privacy Policy</string>
+
+    <!-- Terms screen -->
+    <string name="terms_title">Terms &amp; Privacy</string>
+    <string name="terms_ack_action">I understand and agree</string>
+
+    <!-- Bottom nav -->
+    <string name="nav_home">Home</string>
+    <string name="nav_test_apps">Test Apps</string>
+    <string name="nav_my_apps">My Apps</string>
+    <string name="nav_groups">Groups</string>
+    <string name="nav_profile">Profile</string>
+
+    <!-- Home -->
+    <string name="home_greeting_morning">Good morning</string>
+    <string name="home_greeting_afternoon">Good afternoon</string>
+    <string name="home_greeting_evening">Good evening</string>
+    <string name="home_greeting_night">Working late</string>
+    <string name="home_notifications">Notifications</string>
+    <string name="home_coin_balance">Coin balance</string>
+    <string name="home_trust_score">Trust Score</string>
+    <string name="home_today_progress">Today\'s testing</string>
+    <string name="home_assignments_remaining">Assignments remaining</string>
+    <string name="home_my_apps_summary">My apps</string>
+    <string name="home_active_group">Active group</string>
+    <string name="home_recent_activity">Recent activity</string>
+    <string name="home_see_all">See all</string>
+
+    <!-- Placeholders -->
+    <string name="placeholder_test_apps_title">No assignments yet</string>
+    <string name="placeholder_test_apps_body">Join a group to receive testing assignments from other developers.</string>
+    <string name="placeholder_my_apps_title">You haven\'t submitted an app</string>
+    <string name="placeholder_my_apps_body">Submit an app to get it tested by the community.</string>
+    <string name="placeholder_groups_title">Discover groups</string>
+    <string name="placeholder_groups_body">Groups organize members and testing rotations. Discovery arrives soon.</string>
+    <string name="placeholder_profile_title">Your profile</string>
+    <string name="placeholder_profile_body">Manage your account, wallet and testing history.</string>
+
+    <!-- Actions -->
+    <string name="action_test_app">Test app</string>
+    <string name="action_add_app">Add app</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_sign_out">Sign out</string>
+    <string name="action_back">Back</string>
+    <string name="action_next">Next</string>
+    <string name="action_submit">Submit for review</string>
+</resources>

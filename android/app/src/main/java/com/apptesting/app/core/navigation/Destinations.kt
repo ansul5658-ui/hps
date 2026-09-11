@@ -1,0 +1,81 @@
+package com.apptesting.app.core.navigation
+
+import androidx.annotation.StringRes
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.CardGiftcard
+import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.CardGiftcard
+import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.ui.graphics.vector.ImageVector
+import com.apptesting.app.R
+
+/**
+ * Top-level nav routes. Keeping them as string constants (rather than typed routes)
+ * so this module has zero third-party coupling; typed navigation can be layered on
+ * later if we adopt kotlinx-serialization.
+ */
+object Routes {
+    // Onboarding stack
+    const val Splash = "splash"
+    const val SignIn = "signIn"
+    const val Terms = "terms"
+
+    // Main app graph
+    const val Main = "main"
+
+    // Bottom-nav tabs
+    const val Home = "main/home"
+    const val TestApps = "main/testApps"
+    const val MyApps = "main/myApps"
+    const val Groups = "main/groups"
+    const val Profile = "main/profile"
+
+    // Feature detail routes (registered but wired to placeholder screens for now)
+    const val AddApp = "myApps/add"
+    const val Coins = "profile/coins"
+}
+
+/** One tab of the bottom-navigation bar. */
+enum class TopLevelTab(
+    val route: String,
+    @StringRes val labelRes: Int,
+    val icon: ImageVector,
+    val selectedIcon: ImageVector,
+) {
+    Home(
+        route = Routes.Home,
+        labelRes = R.string.nav_home,
+        icon = Icons.Outlined.Home,
+        selectedIcon = Icons.Rounded.Home,
+    ),
+    TestApps(
+        route = Routes.TestApps,
+        labelRes = R.string.nav_test_apps,
+        icon = Icons.Outlined.CardGiftcard,
+        selectedIcon = Icons.Rounded.CardGiftcard,
+    ),
+    MyApps(
+        route = Routes.MyApps,
+        labelRes = R.string.nav_my_apps,
+        icon = Icons.Outlined.Apps,
+        selectedIcon = Icons.Rounded.Apps,
+    ),
+    Groups(
+        route = Routes.Groups,
+        labelRes = R.string.nav_groups,
+        icon = Icons.Outlined.Groups,
+        selectedIcon = Icons.Rounded.Groups,
+    ),
+    Profile(
+        route = Routes.Profile,
+        labelRes = R.string.nav_profile,
+        icon = Icons.Outlined.Person,
+        selectedIcon = Icons.Rounded.Person,
+    ),
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simple wordmark glyph — a rounded "A" cut. Kept minimal on purpose;
+     designers will replace it with the finished mark. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="@color/splash_foreground"
+        android:pathData="M54,20 L20,84 L34,84 L41,70 L67,70 L74,84 L88,84 Z M47,58 L54,42 L61,58 Z" />
+</vector>

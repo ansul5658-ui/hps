@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Placeholder colors used only by the platform splash before Compose theming takes over. -->
+    <color name="splash_background">#FFF9F8FD</color>
+    <color name="splash_foreground">#FF3D5AFE</color>
+</resources>
