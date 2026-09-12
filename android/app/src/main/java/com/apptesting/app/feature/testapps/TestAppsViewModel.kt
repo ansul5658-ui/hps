@@ -4,15 +4,20 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.apptesting.app.core.data.AppRepository
 import com.apptesting.app.core.data.AssignmentRepository
+import com.apptesting.app.core.data.LogDayResult
 import com.apptesting.app.core.data.ServiceLocator
 import com.apptesting.app.core.data.UserRepository
 import com.apptesting.app.core.model.AppApprovalStatus
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.TestAssignment
+import com.apptesting.app.core.util.TimeProvider
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
@@ -26,17 +31,22 @@ class TestAppsViewModel(
     private val users: UserRepository,
     private val apps: AppRepository,
     private val assignments: AssignmentRepository,
+    private val time: TimeProvider,
 ) : ViewModel() {
 
     constructor() : this(
         users = ServiceLocator.userRepository,
         apps = ServiceLocator.appRepository,
         assignments = ServiceLocator.assignmentRepository,
+        time = TimeProvider.Default,
     )
 
     private val filter = MutableStateFlow(TestFilter.All)
     private val _state = MutableStateFlow<TestAppsUiState>(TestAppsUiState.Loading)
     val state: StateFlow<TestAppsUiState> = _state.asStateFlow()
+
+    private val _events = MutableSharedFlow<TestAppsEvent>()
+    val events: SharedFlow<TestAppsEvent> = _events.asSharedFlow()
 
     init {
         observe()
@@ -47,7 +57,17 @@ class TestAppsViewModel(
     }
 
     fun onCheckIn(assignmentId: String) {
-        viewModelScope.launch { assignments.recordDayOfTesting(assignmentId) }
+        viewModelScope.launch {
+            when (val result = assignments.recordDayOfTesting(assignmentId)) {
+                is LogDayResult.Logged -> Unit // the flow already re-emits with the incremented row
+                LogDayResult.AlreadyLoggedToday ->
+                    // A tap that beat a stale UI to the punch. The button will disable itself
+                    // once the flow re-emits, but a snackbar makes the reason explicit.
+                    _events.emit(TestAppsEvent.Message("You've already logged today for this app."))
+                is LogDayResult.Error ->
+                    _events.emit(TestAppsEvent.Message(result.message))
+            }
+        }
     }
 
     fun onMarkComplete(assignmentId: String) {
@@ -78,6 +98,7 @@ class TestAppsViewModel(
         currentFilter: TestFilter,
     ): TestAppsUiState.Content {
         val assignmentByAppId = myAssignments.associateBy { it.appId }
+        val today = time.todayKey()
         val rows = availableApps
             .filter { it.approvalStatus == AppApprovalStatus.Approved }
             .map { app ->
@@ -92,6 +113,7 @@ class TestAppsViewModel(
                     daysRequired = a?.daysRequired ?: DEFAULT_DAYS,
                     daysCompleted = a?.daysCompleted ?: 0,
                     status = a?.status,
+                    loggedToday = a?.lastLoggedLocalDay == today,
                 )
             }
         val visibleRows = when (currentFilter) {
@@ -115,4 +137,8 @@ class TestAppsViewModel(
         const val DEFAULT_REWARD = 50
         const val DEFAULT_DAYS = 14
     }
+}
+
+sealed interface TestAppsEvent {
+    data class Message(val text: String) : TestAppsEvent
 }

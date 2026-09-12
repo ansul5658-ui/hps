@@ -27,6 +27,8 @@ data class TestRow(
     val daysRequired: Int,
     val daysCompleted: Int,
     val status: AssignmentStatus?,
+    /** True when the tester has already logged testing progress for the current calendar day. */
+    val loggedToday: Boolean,
 ) {
     val progress: Float
         get() = if (daysRequired <= 0) 0f else daysCompleted.toFloat() / daysRequired

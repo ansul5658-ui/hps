@@ -52,8 +52,27 @@ interface AssignmentRepository {
      */
     suspend fun requestCompletion(assignmentId: String): Result<Unit>
 
-    /** Client marks progress locally (e.g. a "check in for today" button in future). */
-    suspend fun recordDayOfTesting(assignmentId: String): Result<Unit>
+    /**
+     * Record one day of testing for [assignmentId].
+     *
+     * Idempotent per calendar day: only the first successful call within a
+     * given local day increments progress; subsequent calls that day return
+     * [LogDayResult.AlreadyLoggedToday] and do not mutate state.
+     *
+     * The same rule is intended to be enforced server-side once Cloud
+     * Functions land — see [com.apptesting.app.core.util.TimeProvider].
+     */
+    suspend fun recordDayOfTesting(assignmentId: String): LogDayResult
+}
+
+/** Outcome of a [AssignmentRepository.recordDayOfTesting] call. */
+sealed interface LogDayResult {
+    /** A new day was logged. [daysCompleted] / [daysRequired] reflect the new totals. */
+    data class Logged(val daysCompleted: Int, val daysRequired: Int) : LogDayResult
+    /** The tester already logged this calendar day — nothing changed. */
+    object AlreadyLoggedToday : LogDayResult
+    /** Something else went wrong (no such assignment, network error, etc). */
+    data class Error(val message: String) : LogDayResult
 }
 
 interface CoinRepository {

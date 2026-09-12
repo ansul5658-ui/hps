@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CardGiftcard
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Savings
 import androidx.compose.material.icons.rounded.Timelapse
@@ -30,9 +31,14 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ProgressIndicatorDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -55,58 +61,71 @@ fun TestAppsScreen(
     viewModel: TestAppsViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val snackbar = remember { SnackbarHostState() }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(PaddingValues(horizontal = 20.dp, vertical = 16.dp)),
-    ) {
-        Text(
-            text = stringResource(R.string.nav_test_apps),
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = "Apps from the community that need testers.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(16.dp))
-        FilterRow(
-            selected = (state as? TestAppsUiState.Content)?.filter ?: TestFilter.All,
-            onSelected = viewModel::setFilter,
-        )
-        Spacer(Modifier.height(16.dp))
-        when (val s = state) {
-            TestAppsUiState.Loading -> LoadingState()
-            is TestAppsUiState.Error -> ErrorState(
-                title = "Couldn't load apps",
-                message = s.message,
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            if (event is TestAppsEvent.Message) snackbar.showSnackbar(event.text)
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { inner ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(inner)
+                .background(MaterialTheme.colorScheme.background)
+                .padding(PaddingValues(horizontal = 20.dp, vertical = 16.dp)),
+        ) {
+            Text(
+                text = stringResource(R.string.nav_test_apps),
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onBackground,
             )
-            is TestAppsUiState.Content -> {
-                if (s.rows.isEmpty()) {
-                    EmptyState(
-                        icon = Icons.Rounded.CardGiftcard,
-                        title = when (s.filter) {
-                            TestFilter.InProgress -> "No tests in progress"
-                            TestFilter.Available -> "Nothing new to test right now"
-                            TestFilter.All -> "No apps available"
-                        },
-                        body = "Check back soon — new apps are added regularly.",
-                    )
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(bottom = 24.dp),
-                    ) {
-                        items(s.rows, key = { it.appId }) { row ->
-                            TestAppCard(
-                                row = row,
-                                onCheckIn = { row.assignmentId?.let(viewModel::onCheckIn) },
-                                onMarkComplete = { row.assignmentId?.let(viewModel::onMarkComplete) },
-                            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Apps from the community that need testers.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(16.dp))
+            FilterRow(
+                selected = (state as? TestAppsUiState.Content)?.filter ?: TestFilter.All,
+                onSelected = viewModel::setFilter,
+            )
+            Spacer(Modifier.height(16.dp))
+            when (val s = state) {
+                TestAppsUiState.Loading -> LoadingState()
+                is TestAppsUiState.Error -> ErrorState(
+                    title = "Couldn't load apps",
+                    message = s.message,
+                )
+                is TestAppsUiState.Content -> {
+                    if (s.rows.isEmpty()) {
+                        EmptyState(
+                            icon = Icons.Rounded.CardGiftcard,
+                            title = when (s.filter) {
+                                TestFilter.InProgress -> "No tests in progress"
+                                TestFilter.Available -> "Nothing new to test right now"
+                                TestFilter.All -> "No apps available"
+                            },
+                            body = "Check back soon — new apps are added regularly.",
+                        )
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(bottom = 24.dp),
+                        ) {
+                            items(s.rows, key = { it.appId }) { row ->
+                                TestAppCard(
+                                    row = row,
+                                    onCheckIn = { row.assignmentId?.let(viewModel::onCheckIn) },
+                                    onMarkComplete = { row.assignmentId?.let(viewModel::onMarkComplete) },
+                                )
+                            }
                         }
                     }
                 }
@@ -205,6 +224,7 @@ private fun TestAppCard(
             Spacer(Modifier.height(16.dp))
             ActionRow(
                 status = row.status,
+                loggedToday = row.loggedToday,
                 canMarkComplete = row.assignmentId != null &&
                     row.status == AssignmentStatus.InProgress &&
                     row.daysCompleted >= row.daysRequired,
@@ -241,6 +261,7 @@ private fun RequirementChip(days: Int) {
 @Composable
 private fun ActionRow(
     status: AssignmentStatus?,
+    loggedToday: Boolean,
     canMarkComplete: Boolean,
     onCheckIn: () -> Unit,
     onMarkComplete: () -> Unit,
@@ -266,10 +287,21 @@ private fun ActionRow(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(
                     onClick = onCheckIn,
+                    enabled = !loggedToday,
                     modifier = Modifier.weight(1f).height(48.dp),
                     shape = MaterialTheme.shapes.large,
                 ) {
-                    Text("Log today")
+                    if (loggedToday) {
+                        Icon(
+                            imageVector = Icons.Rounded.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Logged today")
+                    } else {
+                        Text("Log today")
+                    }
                 }
                 Button(
                     onClick = onMarkComplete,

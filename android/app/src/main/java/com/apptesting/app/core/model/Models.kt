@@ -110,6 +110,14 @@ data class TestAssignment(
     val status: AssignmentStatus = AssignmentStatus.Ready,
     /** server-authoritative — Coin reward awarded on verified completion */
     val coinReward: Int = 0,
+    /**
+     * Last day the tester logged testing progress, formatted as `yyyy-MM-dd`
+     * in the tester's local timezone. Used to enforce the "one log per
+     * calendar day per assignment" rule idempotently: a repeated tap on the
+     * same day is a no-op. Written by the server (or, in tests, the mock
+     * repository); never mutated by the client via a copy() call.
+     */
+    val lastLoggedLocalDay: String? = null,
 ) {
     /** Convenience — derived from days rather than a duplicate percentage field. */
     val progressPercent: Int

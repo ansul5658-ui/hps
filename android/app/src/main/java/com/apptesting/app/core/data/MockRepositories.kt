@@ -8,6 +8,7 @@ import com.apptesting.app.core.model.GroupMember
 import com.apptesting.app.core.model.Notification
 import com.apptesting.app.core.model.TestAssignment
 import com.apptesting.app.core.model.User
+import com.apptesting.app.core.util.TimeProvider
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -95,7 +96,10 @@ internal class MockGroupRepository(private val store: MockStore) : GroupReposito
     }
 }
 
-internal class MockAssignmentRepository(private val store: MockStore) : AssignmentRepository {
+internal class MockAssignmentRepository(
+    private val store: MockStore,
+    private val time: TimeProvider = TimeProvider.Default,
+) : AssignmentRepository {
     override fun observeAssignmentsForUser(userId: String): Flow<List<TestAssignment>> =
         store.assignments
             .map { list -> list.filter { it.testerUserId == userId } }
@@ -110,19 +114,47 @@ internal class MockAssignmentRepository(private val store: MockStore) : Assignme
         return Result.success(Unit)
     }
 
-    override suspend fun recordDayOfTesting(assignmentId: String): Result<Unit> {
-        store.assignments.value = store.assignments.value.map {
-            if (it.id != assignmentId) it
-            else it.copy(
-                daysCompleted = (it.daysCompleted + 1).coerceAtMost(it.daysRequired),
-                status = when {
-                    it.daysCompleted + 1 >= it.daysRequired -> AssignmentStatus.WaitingForVerification
-                    it.status == AssignmentStatus.Ready -> AssignmentStatus.InProgress
-                    else -> it.status
-                },
+    /**
+     * Idempotent per calendar day.
+     *
+     * Reads the current assignment, computes the outcome, and — only when
+     * the row is unchanged since it was read — replaces it via
+     * [MutableStateFlow.compareAndSet]. That check-and-set is the mock's
+     * stand-in for the Firestore transaction / security-rule-guarded
+     * subcollection write that the Cloud Function will use: two concurrent
+     * "Log today" taps can both see the same starting state, but only one
+     * writes the increment; the other retries and observes the newly-set
+     * `lastLoggedLocalDay` and returns [LogDayResult.AlreadyLoggedToday].
+     */
+    override suspend fun recordDayOfTesting(assignmentId: String): LogDayResult {
+        val today = time.todayKey()
+        while (true) {
+            val current = store.assignments.value
+            val target = current.firstOrNull { it.id == assignmentId }
+                ?: return LogDayResult.Error("Assignment not found")
+
+            if (target.lastLoggedLocalDay == today) {
+                return LogDayResult.AlreadyLoggedToday
+            }
+
+            val newDays = (target.daysCompleted + 1).coerceAtMost(target.daysRequired)
+            val newStatus = when {
+                newDays >= target.daysRequired -> AssignmentStatus.WaitingForVerification
+                target.status == AssignmentStatus.Ready -> AssignmentStatus.InProgress
+                else -> target.status
+            }
+            val updated = target.copy(
+                daysCompleted = newDays,
+                status = newStatus,
+                lastLoggedLocalDay = today,
             )
+            val next = current.map { if (it.id == assignmentId) updated else it }
+
+            if (store.assignments.compareAndSet(current, next)) {
+                return LogDayResult.Logged(daysCompleted = newDays, daysRequired = target.daysRequired)
+            }
+            // Someone else updated the store between read and write; loop and re-check.
         }
-        return Result.success(Unit)
     }
 }
 
