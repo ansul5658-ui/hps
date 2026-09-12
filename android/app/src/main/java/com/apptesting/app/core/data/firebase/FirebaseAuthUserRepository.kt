@@ -1,6 +1,7 @@
 package com.apptesting.app.core.data.firebase
 
 import android.content.Context
+import android.util.Log
 import com.apptesting.app.core.data.AuthGateway
 import com.apptesting.app.core.data.UserRepository
 import com.apptesting.app.core.model.User
@@ -20,6 +21,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeout
+
+private const val TAG = "AUTH_DEBUG"
 
 /**
  * Real Firebase-backed [UserRepository] + [AuthGateway].
@@ -35,6 +39,10 @@ import kotlinx.coroutines.tasks.await
  * photoUrl, createdAt (create-only), updatedAt. Server-authoritative
  * fields (role, coinBalance, trustScore, isSuspended) are never sent
  * from the client.
+ *
+ * Diagnostic logging + per-call timeouts around the FirebaseAuth and
+ * Firestore round trips ensure that even a hung backend surfaces as an
+ * actionable error in the UI rather than an infinite Loading spinner.
  */
 internal class FirebaseAuthUserRepository(
     private val appContext: Context,
@@ -75,6 +83,7 @@ internal class FirebaseAuthUserRepository(
     }
 
     override suspend fun signOut() {
+        Log.d(TAG, "FirebaseAuth.signOut()")
         auth.signOut()
     }
 
@@ -84,10 +93,14 @@ internal class FirebaseAuthUserRepository(
     override fun webClientId(): String? = FirebaseAvailability.webClientId(appContext)
 
     override suspend fun signInWithGoogleIdToken(idToken: String): Result<Unit> = runCatching {
+        Log.d(TAG, "FirebaseAuth.signInWithCredential — starting")
         val credential = GoogleAuthProvider.getCredential(idToken, null)
-        val user = auth.signInWithCredential(credential).await().user
-            ?: error("FirebaseAuth returned no user after sign-in.")
+        val user = withTimeout(AUTH_STEP_TIMEOUT_MS) {
+            auth.signInWithCredential(credential).await().user
+        } ?: error("FirebaseAuth returned no user after sign-in.")
+        Log.d(TAG, "FirebaseAuth.signInWithCredential — completed uid=${user.uid}")
         upsertProfile(user)
+        Log.d(TAG, "auth flow finished successfully")
     }
 
     // ---- Firestore profile upsert -------------------------------------
@@ -103,11 +116,17 @@ internal class FirebaseAuthUserRepository(
             "updatedAt" to FieldValue.serverTimestamp(),
         )
         val ref = firestore.collection("users").document(user.uid)
-        val snapshot = ref.get().await()
+        Log.d(TAG, "Firestore users/${user.uid}.get() — starting")
+        val snapshot = withTimeout(FIRESTORE_STEP_TIMEOUT_MS) { ref.get().await() }
+        Log.d(TAG, "Firestore users/${user.uid}.get() — exists=${snapshot.exists()}")
         if (!snapshot.exists()) {
             profile["createdAt"] = FieldValue.serverTimestamp()
         }
-        ref.set(profile, SetOptions.merge()).await()
+        Log.d(TAG, "Firestore users/${user.uid}.set(merge) — starting")
+        withTimeout(FIRESTORE_STEP_TIMEOUT_MS) {
+            ref.set(profile, SetOptions.merge()).await()
+        }
+        Log.d(TAG, "Firestore users/${user.uid}.set(merge) — completed")
     }
 
     private fun FirebaseUser.toIdentity(): User = User(
@@ -122,5 +141,13 @@ internal class FirebaseAuthUserRepository(
         "moderator" -> UserRole.Moderator
         "admin" -> UserRole.Admin
         else -> UserRole.Member
+    }
+
+    private companion object {
+        // Ceilings on the individual Firebase network calls. Sum is well
+        // under AuthViewModel.FIREBASE_TIMEOUT_MS so the outer timeout
+        // remains the last-resort guard.
+        const val AUTH_STEP_TIMEOUT_MS = 20_000L
+        const val FIRESTORE_STEP_TIMEOUT_MS = 15_000L
     }
 }

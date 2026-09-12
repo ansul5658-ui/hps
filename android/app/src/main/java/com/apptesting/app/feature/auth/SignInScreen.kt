@@ -41,9 +41,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import android.util.Log
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.R
+
+private const val TAG = "AUTH_DEBUG"
 
 /**
  * Sign-in landing screen.
@@ -63,12 +66,15 @@ fun SignInScreen(
     val context = LocalContext.current
 
     LaunchedEffect(state) {
+        Log.d(TAG, "SignInScreen observed state=${state::class.simpleName}")
         when (val s = state) {
             SignInUiState.Success -> {
+                Log.d(TAG, "SignInScreen -> onSignedIn()")
                 viewModel.consume()
                 onSignedIn()
             }
             is SignInUiState.Error -> {
+                Log.d(TAG, "SignInScreen -> snackbar Error: ${s.message}")
                 snackbar.showSnackbar(s.message)
                 viewModel.consume()
             }
