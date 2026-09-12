@@ -132,7 +132,7 @@ fun ProgressCard(
                 progress = { progress?.coerceIn(0f, 1f) ?: 0f },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(10.dp),
+                    .height(8.dp),
                 strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
                 color = MaterialTheme.colorScheme.primary,

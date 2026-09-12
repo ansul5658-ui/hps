@@ -53,6 +53,7 @@ import com.apptesting.app.core.designsystem.component.AppIconAvatar
 import com.apptesting.app.core.designsystem.component.EmptyState
 import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
+import com.apptesting.app.core.designsystem.component.ScreenContainer
 import com.apptesting.app.core.designsystem.component.ScreenHeader
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
@@ -77,13 +78,7 @@ fun TestAppsScreen(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
     ) { inner ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(inner)
-                .background(MaterialTheme.colorScheme.background)
-                .padding(PaddingValues(horizontal = 20.dp, vertical = 16.dp)),
-        ) {
+        ScreenContainer(modifier = Modifier.padding(inner)) {
             ScreenHeader(
                 title = stringResource(R.string.nav_test_apps),
                 subtitle = "Apps from the community that need testers.",

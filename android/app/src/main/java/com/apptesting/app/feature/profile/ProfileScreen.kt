@@ -45,6 +45,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.R
 import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
+import com.apptesting.app.core.designsystem.component.ResponsivePane
 import com.apptesting.app.core.model.CoinTransactionKind
 
 @Composable
@@ -75,10 +76,10 @@ private fun ProfileContent(
     state: ProfileUiState.Content,
     onSignOut: () -> Unit,
 ) {
+    ResponsivePane {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
             .padding(PaddingValues(horizontal = 20.dp, vertical = 16.dp)),
     ) {
@@ -157,6 +158,7 @@ private fun ProfileContent(
             Text(stringResource(R.string.action_sign_out))
         }
         Spacer(Modifier.height(24.dp))
+    }
     }
 }
 

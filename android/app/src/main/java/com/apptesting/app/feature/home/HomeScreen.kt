@@ -54,6 +54,7 @@ import com.apptesting.app.R
 import com.apptesting.app.core.designsystem.component.AppIconAvatar
 import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
+import com.apptesting.app.core.designsystem.component.ResponsivePane
 import com.apptesting.app.core.designsystem.component.SectionHeader
 import com.apptesting.app.core.designsystem.component.StatCard
 import com.apptesting.app.core.designsystem.component.StatusPill
@@ -89,10 +90,9 @@ private fun HomeContent(
     onGoToTestApps: () -> Unit,
     onGoToMyApps: () -> Unit,
 ) {
+    ResponsivePane {
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -203,6 +203,7 @@ private fun HomeContent(
 
         item { Spacer(Modifier.height(24.dp)) }
     }
+    }
 }
 
 @Composable
@@ -301,7 +302,7 @@ private fun ActiveGroupCard(name: String?, email: String?) {
                                     imageVector = Icons.Rounded.Email,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(14.dp),
+                                    modifier = Modifier.size(16.dp),
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(

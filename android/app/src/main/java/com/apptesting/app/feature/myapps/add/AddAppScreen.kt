@@ -53,6 +53,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.R
+import com.apptesting.app.core.designsystem.component.ResponsivePane
 
 /**
  * Multi-step Add App flow.
@@ -110,7 +111,8 @@ fun AddAppScreen(
             )
         },
     ) { inner ->
-        Column(Modifier.padding(inner).fillMaxSize()) {
+        ResponsivePane(modifier = Modifier.padding(inner)) {
+        Column(Modifier.fillMaxSize()) {
             Stepper(steps = steps, current = step)
             Column(
                 modifier = Modifier
@@ -165,6 +167,7 @@ fun AddAppScreen(
                     }
                 },
             )
+        }
         }
     }
 }

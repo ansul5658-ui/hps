@@ -53,6 +53,7 @@ import com.apptesting.app.core.designsystem.component.AppIconAvatar
 import com.apptesting.app.core.designsystem.component.EmptyState
 import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
+import com.apptesting.app.core.designsystem.component.ScreenContainer
 import com.apptesting.app.core.designsystem.component.ScreenHeader
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
@@ -77,13 +78,7 @@ fun GroupsScreen(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
     ) { inner ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(inner)
-                .padding(PaddingValues(horizontal = 20.dp, vertical = 16.dp))
-                .background(MaterialTheme.colorScheme.background),
-        ) {
+        ScreenContainer(modifier = Modifier.padding(inner)) {
             ScreenHeader(
                 title = stringResource(R.string.nav_groups),
                 subtitle = "Admin-managed Google Groups you can join for closed testing.",

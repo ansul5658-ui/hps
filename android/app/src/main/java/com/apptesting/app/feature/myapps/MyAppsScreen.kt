@@ -39,6 +39,7 @@ import com.apptesting.app.core.designsystem.component.AppIconAvatar
 import com.apptesting.app.core.designsystem.component.EmptyState
 import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
+import com.apptesting.app.core.designsystem.component.ScreenContainer
 import com.apptesting.app.core.designsystem.component.ScreenHeader
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
@@ -51,12 +52,7 @@ fun MyAppsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(PaddingValues(horizontal = 20.dp, vertical = 16.dp)),
-    ) {
+    ScreenContainer {
         Header(onAddApp = onAddApp)
         Spacer(Modifier.height(16.dp))
         when (val s = state) {
