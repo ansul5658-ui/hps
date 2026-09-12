@@ -1,53 +1,186 @@
 rules_version = '2';
 
-// Phase 3 Step 1 — authenticated-user rules.
+// Phase 3 Step 2 — Firestore data layer.
 //
-// Only what Step 1 actually exercises is opened up here:
-//   * users/{uid} — a signed-in user may read and merge-write their OWN
-//     profile document, restricted to the client-writable fields.
-//     Server-authoritative fields (role, coinBalance, trustScore,
-//     isSuspended) are refused; a Cloud Function must set them.
+// The client is a Firestore-first Android app. These rules encode what the
+// client is allowed to do without any Cloud Function present, and are
+// explicitly designed so that when Cloud Functions land the same rules
+// keep the client honest.
 //
-// Every other collection is denied for now — later phases will open reads
-// for apps, groups, testAssignments, etc. Rules should never be relaxed
-// beyond what the current step actually needs.
+// Guiding principles:
+//   * Server-authoritative fields (coinBalance, trustScore, role,
+//     isSuspended on users; daysCompleted, coinReward on assignments;
+//     memberCount on groups) are NEVER written by the client. Rules
+//     refuse any request that mutates them.
+//   * Ownership is the primary access boundary. A user can only
+//     read/write objects tied to their own uid.
+//   * `testingLogs` uses deterministic doc IDs ("{aid}__{yyyy-MM-dd}")
+//     so a repeat call for the same assignment+day fails at the storage
+//     layer regardless of client behavior. The rule below is the second
+//     line of defense.
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Only fields the client is allowed to set on its own users/{uid} doc.
-    function isProfileFieldsOnly(data) {
-      let allowed = ['displayName', 'email', 'photoUrl', 'createdAt', 'lastSignedInAt'];
-      return data.keys().hasOnly(allowed);
+    // ---------- helpers -------------------------------------------------
+
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+
+    // "The incoming write only touches these keys."
+    function onlyChanges(before, after, keys) {
+      return after.diff(before).affectedKeys().hasOnly(keys);
     }
 
-    // Extra guard: incoming data must NOT mutate server-authoritative fields.
-    function doesNotTouchServerFields(before, after) {
-      return !after.diff(before).affectedKeys().hasAny(
-        ['role', 'coinBalance', 'trustScore', 'isSuspended']
-      );
+    // "The incoming create sets no keys outside this allow-list."
+    function onlyHas(data, keys) {
+      return data.keys().hasOnly(keys);
     }
+
+    // Fields on `users/{uid}` the client may write on create.
+    function userCreateAllowed(data, uid) {
+      return onlyHas(data, ['uid', 'email', 'displayName', 'photoUrl', 'createdAt', 'updatedAt'])
+        && data.uid == uid;
+    }
+
+    // Fields on `users/{uid}` the client may write on update. Rules also
+    // forbid touching server-authoritative fields.
+    function userUpdateAllowed(before, after) {
+      return onlyChanges(before, after,
+        ['email', 'displayName', 'photoUrl', 'updatedAt']);
+    }
+
+    // ---------- users ---------------------------------------------------
 
     match /users/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
+      allow read: if isSelf(userId);
 
-      // First create — the profile document doesn't exist yet.
-      allow create: if request.auth != null
-        && request.auth.uid == userId
-        && isProfileFieldsOnly(request.resource.data);
+      allow create: if isSelf(userId)
+        && userCreateAllowed(request.resource.data, userId);
 
-      // Subsequent merges — must keep to allowed keys AND leave the
-      // server-authoritative fields alone.
-      allow update: if request.auth != null
-        && request.auth.uid == userId
-        && isProfileFieldsOnly(request.resource.data)
-        && doesNotTouchServerFields(resource.data, request.resource.data);
+      allow update: if isSelf(userId)
+        && userUpdateAllowed(resource.data, request.resource.data);
 
-      // Client never deletes its own profile — admin tooling handles that.
+      allow delete: if false;
+
+      // Per-user append-only coin ledger. Only Cloud Functions write.
+      match /coinTransactions/{txId} {
+        allow read: if isSelf(userId);
+        allow write: if false;
+      }
+
+      // Per-user membership subcollection. Client is authoritative for
+      // "am I in this group"; a Cloud Function keeps groups.memberCount
+      // in sync later.
+      match /memberships/{groupId} {
+        allow read: if isSelf(userId);
+        allow create, update: if isSelf(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.groupId == groupId;
+        allow delete: if isSelf(userId);
+      }
+    }
+
+    // ---------- apps ----------------------------------------------------
+
+    match /apps/{appId} {
+      // Any signed-in user can browse the catalog. If we ever want a
+      // stricter view (e.g. only approved apps) that's a query filter,
+      // not a rule — the mobile client already filters on `status`.
+      allow read: if signedIn();
+
+      // Create: the owner must be the authed user, status must start at
+      // pendingReview, and only the client-writable fields may be set.
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.status == 'pendingReview'
+        && onlyHas(request.resource.data, [
+          'ownerId', 'appName', 'packageName', 'versionName',
+          'playStoreUrl', 'closedTestingUrl', 'iconUrl',
+          'description', 'status', 'createdAt', 'updatedAt'
+        ]);
+
+      // Update: only the owner can edit, they may change only these
+      // profile fields, they can't advance the review status themselves,
+      // and they can't change the ownerId (impersonation guard).
+      allow update: if signedIn()
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.status == resource.data.status
+        && onlyChanges(resource.data, request.resource.data, [
+          'appName', 'packageName', 'versionName',
+          'playStoreUrl', 'closedTestingUrl', 'iconUrl',
+          'description', 'updatedAt'
+        ]);
+
+      // Delete: owner only. Admin tooling for takedowns runs server-side.
+      allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+    }
+
+    // ---------- groups --------------------------------------------------
+
+    match /groups/{groupId} {
+      // Any signed-in user can discover groups.
+      allow read: if signedIn();
+      // Groups are created and edited by admins only; the client-side
+      // admin console is not in scope for Step 2, so lock down all
+      // writes for now.
+      allow write: if false;
+    }
+
+    // ---------- testingAssignments -------------------------------------
+
+    match /testingAssignments/{assignmentId} {
+      // A tester may read assignments assigned to them; a developer may
+      // read assignments referencing their app so they can see progress.
+      allow read: if signedIn() && (
+        resource.data.testerId == request.auth.uid
+          || resource.data.developerId == request.auth.uid
+      );
+
+      // The client cannot create assignments — a future admin flow /
+      // Cloud Function does that once groups start distributing testers.
+      allow create: if false;
+
+      // The tester can flip the status to `waitingForVerification` and
+      // update `updatedAt`. Everything else — daysCompleted, coinReward,
+      // completion → completed — is server-authoritative.
+      allow update: if signedIn()
+        && resource.data.testerId == request.auth.uid
+        && onlyChanges(resource.data, request.resource.data, ['status', 'updatedAt'])
+        && request.resource.data.status == 'waitingForVerification'
+        && resource.data.status in ['ready', 'inProgress'];
+
       allow delete: if false;
     }
 
-    // Everything else — locked down until the corresponding Firestore
-    // repository lands in a later phase step.
+    // ---------- testingLogs --------------------------------------------
+
+    match /testingLogs/{logId} {
+      // A tester may read their own logs.
+      allow read: if signedIn() && resource.data.testerId == request.auth.uid;
+
+      // Duplicate protection has two layers:
+      //   1. Deterministic doc ID "{assignmentId}__{yyyy-MM-dd}" makes a
+      //      second create for the same day fail at the storage layer.
+      //   2. This rule refuses a create that doesn't match its own ID —
+      //      so a client can't try to smuggle two logs into different
+      //      IDs for the same assignment+day.
+      allow create: if signedIn()
+        && request.resource.data.testerId == request.auth.uid
+        && onlyHas(request.resource.data, ['assignmentId', 'testerId', 'date', 'createdAt'])
+        && logId == request.resource.data.assignmentId + '__' + request.resource.data.date
+        // The referenced assignment must exist and belong to this tester.
+        && exists(/databases/$(database)/documents/testingAssignments/$(request.resource.data.assignmentId))
+        && get(/databases/$(database)/documents/testingAssignments/$(request.resource.data.assignmentId))
+             .data.testerId == request.auth.uid;
+
+      // Logs are append-only.
+      allow update, delete: if false;
+    }
+
+    // Anything not matched explicitly is denied. This is important:
+    // future collections should get their own dedicated match block
+    // that opens up only what the corresponding repository actually needs.
     match /{document=**} {
       allow read, write: if false;
     }

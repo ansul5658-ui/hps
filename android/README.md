@@ -10,7 +10,8 @@ coexist with the unrelated WordPress theme + Next.js SaaS work at the repo root.
 
 - **Phase 1** — project scaffold, design system, navigation, splash + sign-in + terms flow.
 - **Phase 2** — mock data + real UI content across Home, Test Apps, My Apps, Groups, Profile, Add App.
-- **Phase 3 Step 1** — real Firebase Authentication, session persistence, `users/{uid}` profile write, starter Firestore security rules. Other repositories remain mocked and will be swapped one by one in later steps.
+- **Phase 3 Step 1** — real Firebase Authentication, session persistence, `users/{uid}` profile write, starter Firestore security rules.
+- **Phase 3 Step 2** — Firestore-backed repositories for `apps`, `groups`, `testingAssignments`, `testingLogs`, plus `users/{uid}/memberships` and `users/{uid}/coinTransactions` subcollections. Real-time listeners drive the UI. Idempotent daily-log writes via deterministic doc IDs + Firestore transaction. Notifications stay on the mock until FCM lands.
 
 ## Requirements
 
@@ -99,21 +100,51 @@ com.apptesting.app
     └── testapps
 ```
 
-## Planned Firestore collections
+## Firestore collections
 
-Server-side security rules must enforce all of these; the client trusts none of them.
+Server-side security rules enforce every one of these; the client trusts none of them.
 
-| Collection         | Purpose                                                    | Step wired |
-| ------------------ | ---------------------------------------------------------- | ---------- |
-| `users`            | Profile (client-writable), role, coinBalance, trustScore   | 3.1        |
-| `apps`             | App submissions + approval state                           | 3.2        |
-| `groups`           | Group metadata, visibility, state                          | 3.3        |
-| `groupMembers`     | Membership rows (`groupId × userId`)                       | 3.3        |
-| `testAssignments`  | One row per (app × tester) — status, deadline, progress    | 3.4        |
-| `coinTransactions` | Immutable ledger — written only by Cloud Functions         | 3.5        |
-| `notifications`    | Per-user notifications                                     | 3.6        |
-| `reports`          | Moderation queue                                           | 3.7        |
-| `adminActions`     | Immutable audit log of admin operations                    | 3.7        |
+| Collection / Path                          | Written by            | Read by                       | Step |
+| ------------------------------------------ | --------------------- | ----------------------------- | ---- |
+| `users/{uid}`                              | Owner (limited)       | Owner                         | 3.1  |
+| `users/{uid}/memberships/{groupId}`        | Owner                 | Owner                         | 3.2  |
+| `users/{uid}/coinTransactions/{txId}`      | Cloud Functions only  | Owner                         | 3.2 (read-only client) |
+| `apps/{appId}`                             | Owner (limited)       | Any signed-in user            | 3.2  |
+| `groups/{groupId}`                         | Admin / CFs only      | Any signed-in user            | 3.2  |
+| `testingAssignments/{assignmentId}`        | Admin / CFs; tester may only advance `status → waitingForVerification` | Assignment tester + developer | 3.2 |
+| `testingLogs/{assignmentId}__{yyyy-MM-dd}` | Tester (append-only)  | Tester                        | 3.2 |
+| `notifications/{notificationId}`           | Cloud Functions only  | Owner                         | 3.6 (planned) |
+| `reports/{reportId}`                       | Any signed-in user    | Admin                         | 3.7 (planned) |
+| `adminActions/{actionId}`                  | Cloud Functions only  | Admin                         | 3.7 (planned) |
+
+### `users/{uid}` field contract
+
+Client-writable: `uid`, `email`, `displayName`, `photoUrl`, `createdAt` (create only), `updatedAt`.
+Server-authoritative (Cloud Functions later): `role`, `coinBalance`, `trustScore`, `isSuspended`.
+
+### `apps/{appId}` field contract
+
+`ownerId`, `appName`, `packageName`, `versionName`, `playStoreUrl`, `closedTestingUrl`,
+`iconUrl`, `description`, `status`, `createdAt`, `updatedAt`. `status` starts at
+`pendingReview`; only admins / Cloud Functions may advance it.
+
+### `testingAssignments/{assignmentId}` field contract
+
+`appId`, `testerId`, `developerId`, `daysRequired`, `daysCompleted`, `coinReward`,
+`status`, `createdAt`, `updatedAt`. The client can only flip `status` from
+`ready` / `inProgress` → `waitingForVerification`. `daysCompleted` is
+server-authoritative and will be maintained by a Cloud Function; the client's UI
+still shows live progress because [FirestoreAssignmentRepository](app/src/main/java/com/apptesting/app/core/data/firebase/firestore/FirestoreAssignmentRepository.kt)
+derives it from the `testingLogs` collection on the fly.
+
+### `testingLogs/{assignmentId}__{yyyy-MM-dd}` field contract
+
+`assignmentId`, `testerId`, `date` (`yyyy-MM-dd`), `createdAt`.
+Deterministic doc ID (`{assignmentId}__{date}`) is the primary duplicate-log
+defense: Firestore refuses the second create for the same day at the storage
+layer, regardless of client behavior. The rules add a second layer of defense:
+they refuse a create whose payload doesn't match its own doc ID and refuse a
+create whose `testerId` doesn't match the corresponding assignment's tester.
 
 ## Security
 
@@ -133,12 +164,23 @@ Server-side security rules must enforce all of these; the client trusts none of 
 
 ## What is NOT built yet
 
-- Firestore repositories for `apps`, `groups`, `testAssignments`, `coinTransactions`,
-  `notifications`, `reports`, `adminActions`. Those still use the mock implementations
-  and will be swapped in Phase 3 Steps 2–7.
 - Cloud Functions for Coins / Trust Score / assignment verification / user role init.
+  Until those land, `daysCompleted` on assignment docs stays at zero server-side and
+  the client derives progress from `testingLogs`; `coinBalance` and `trustScore`
+  read from `users/{uid}` and stay at zero until CFs write them.
+- Admin console for creating `groups` and `testingAssignments` — Firestore rules
+  currently reject client writes to both.
+- `notifications` — stays on the mock repository until FCM lands.
+- `reports` and `adminActions` — planned for Step 7.
 - Firebase Storage (real app icons and screenshots).
 - FCM inbox + push handling.
-- Admin console (planned as a separate variant).
 - Google Play Console automation — intentionally out of scope; we store the
   developer-provided links only.
+
+### Manual test data (before Cloud Functions land)
+
+Until Step 3+ delivers an admin console, use the Firebase Console (or the
+Firebase CLI) to insert `groups/{groupId}` and `testingAssignments/{assignmentId}`
+documents matching the field contracts above. Once a signed-in user's uid is
+set as `testerId` on an assignment (and the user has joined the corresponding
+group), the mobile app will surface it under Test Apps.

@@ -3,20 +3,24 @@ package com.apptesting.app.core.data
 import android.content.Context
 import com.apptesting.app.core.data.firebase.FirebaseAuthUserRepository
 import com.apptesting.app.core.data.firebase.FirebaseAvailability
+import com.apptesting.app.core.data.firebase.firestore.FirestoreAppRepository
+import com.apptesting.app.core.data.firebase.firestore.FirestoreAssignmentRepository
+import com.apptesting.app.core.data.firebase.firestore.FirestoreCoinRepository
+import com.apptesting.app.core.data.firebase.firestore.FirestoreGroupRepository
 
 /**
  * Very small service locator for repositories.
  *
  * Two-mode strategy:
  *   * If Firebase is initialized (i.e. google-services.json was present at
- *     build time and the plugin generated its resources), the real
- *     [FirebaseAuthUserRepository] backs auth and profile writes.
+ *     build time and the plugin generated its resources), each repository
+ *     resolves to its Firestore-backed implementation.
  *   * Otherwise the in-memory mocks back every repository, so the app
  *     stays runnable end-to-end during early development.
  *
- * Non-auth repositories stay on the mock implementation for now — Phase 3
- * later steps will swap them one by one behind the same interfaces without
- * touching UI code.
+ * The Notification repository has no Firestore equivalent yet — FCM
+ * inbox handling lands in a later step — so it stays on the mock in
+ * both modes for now.
  *
  * [init] must be called from [com.apptesting.app.AppTestingApplication.onCreate].
  */
@@ -38,15 +42,33 @@ object ServiceLocator {
         FirebaseAvailability.isConfigured(appContext)
     }
 
+    // ---- Mock backing store (used in dev mode + kept for future tests). ----
     private val store by lazy { MockStore() }
     private val mockUsers by lazy { MockUserRepository(store) }
+    private val mockApps by lazy { MockAppRepository(store) }
+    private val mockGroups by lazy { MockGroupRepository(store) }
+    private val mockAssignments by lazy { MockAssignmentRepository(store) }
+    private val mockCoins by lazy { MockCoinRepository(store) }
+    private val mockNotifications by lazy { MockNotificationRepository(store) }
 
+    // ---- Public repositories ---------------------------------------------
     val userRepository: UserRepository by lazy {
         if (isFirebaseEnabled) FirebaseAuthUserRepository(appContext) else mockUsers
     }
-    val appRepository: AppRepository by lazy { MockAppRepository(store) }
-    val groupRepository: GroupRepository by lazy { MockGroupRepository(store) }
-    val assignmentRepository: AssignmentRepository by lazy { MockAssignmentRepository(store) }
-    val coinRepository: CoinRepository by lazy { MockCoinRepository(store) }
-    val notificationRepository: NotificationRepository by lazy { MockNotificationRepository(store) }
+    val appRepository: AppRepository by lazy {
+        if (isFirebaseEnabled) FirestoreAppRepository() else mockApps
+    }
+    val groupRepository: GroupRepository by lazy {
+        if (isFirebaseEnabled) FirestoreGroupRepository() else mockGroups
+    }
+    val assignmentRepository: AssignmentRepository by lazy {
+        if (isFirebaseEnabled) FirestoreAssignmentRepository() else mockAssignments
+    }
+    val coinRepository: CoinRepository by lazy {
+        if (isFirebaseEnabled) FirestoreCoinRepository() else mockCoins
+    }
+    val notificationRepository: NotificationRepository by lazy {
+        // FCM + notifications inbox lands in Step 6.
+        mockNotifications
+    }
 }
