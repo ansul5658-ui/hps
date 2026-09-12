@@ -5,25 +5,9 @@ plugins {
     alias(libs.plugins.kotlin.parcelize)
 }
 
-// Apply the google-services plugin only if the developer has dropped the
-// real google-services.json into app/. This lets the project build in
-// two modes:
-//   * without google-services.json  — Firebase is inactive; the mock
-//     repositories back the UI. Useful for CI and early development.
-//   * with google-services.json     — Firebase Auth / Firestore /
-//     Storage / FCM initialize automatically via the plugin-generated
-//     resources and the ContentProvider merged into the manifest.
-// Nothing is faked in either mode.
-val googleServicesJson = project.file("google-services.json")
-if (googleServicesJson.exists()) {
+if (file("google-services.json").exists()) {
     apply(plugin = libs.plugins.google.services.get().pluginId)
-    logger.lifecycle("Firebase enabled — using ${googleServicesJson.name}")
-} else {
-    logger.lifecycle(
-        "google-services.json missing at ${googleServicesJson.absolutePath} — " +
-            "Firebase features are inactive; mock repositories will back the UI. " +
-            "See android/README.md for the console setup checklist.",
-    )
+    println("Firebase enabled — using google-services.json")
 }
 
 android {
@@ -35,24 +19,29 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables { useSupportLibrary = true }
+
+        vectorDrawables {
+            useSupportLibrary = true
+        }
     }
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
+            // IMPORTANT:
+            // No applicationIdSuffix here.
+            // Firebase is configured for com.apptesting.app.
             isMinifyEnabled = false
         }
+
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
+                "proguard-rules.pro"
             )
         }
     }
@@ -64,16 +53,15 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
-        freeCompilerArgs = freeCompilerArgs + listOf(
-            "-opt-in=kotlin.RequiresOptIn",
+
+        freeCompilerArgs += listOf(
             "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
-            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi",
+            "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi"
         )
     }
 
     buildFeatures {
         compose = true
-        buildConfig = true
     }
 
     packaging {
@@ -84,17 +72,26 @@ android {
 }
 
 dependencies {
-    // Core AndroidX
+
+    // Kotlin & Coroutines
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
+
+    // AndroidX Foundation
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.splashscreen)
+
+    // Lifecycle
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
+
+    // DataStore
     implementation(libs.androidx.datastore.preferences)
 
-    // Compose
+    // Jetpack Compose
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
@@ -105,16 +102,10 @@ dependencies {
     // Navigation
     implementation(libs.androidx.navigation.compose)
 
-    // Coroutines
-    implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.kotlinx.coroutines.play.services)
-
-    // Coil for async image loading (used for app icons/avatars)
+    // Image loading
     implementation(libs.coil.compose)
 
-    // Firebase — declared here so the wiring is ready.
-    // NOTE: adding `google-services.json` and the `com.google.gms.google-services` plugin
-    // is required before these can initialize at runtime. See android/README.md.
+    // Firebase
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth.ktx)
     implementation(libs.firebase.firestore.ktx)
@@ -122,17 +113,20 @@ dependencies {
     implementation(libs.firebase.functions.ktx)
     implementation(libs.firebase.messaging.ktx)
 
-    // Credential Manager (modern Google sign-in path)
+    // Credential Manager / Google Sign-In
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services.auth)
     implementation(libs.googleid)
+    implementation(libs.play.services.auth)
 
-    // Tests
+    // Testing
     testImplementation(libs.junit)
+
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
