@@ -46,10 +46,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.R
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.text.style.TextOverflow
 import com.apptesting.app.core.designsystem.component.AppIconAvatar
 import com.apptesting.app.core.designsystem.component.EmptyState
 import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
+import com.apptesting.app.core.designsystem.component.ScreenHeader
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.model.AssignmentStatus
@@ -80,16 +84,9 @@ fun TestAppsScreen(
                 .background(MaterialTheme.colorScheme.background)
                 .padding(PaddingValues(horizontal = 20.dp, vertical = 16.dp)),
         ) {
-            Text(
-                text = stringResource(R.string.nav_test_apps),
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onBackground,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "Apps from the community that need testers.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            ScreenHeader(
+                title = stringResource(R.string.nav_test_apps),
+                subtitle = "Apps from the community that need testers.",
             )
             Spacer(Modifier.height(16.dp))
             FilterRow(
@@ -139,7 +136,12 @@ private fun FilterRow(
     selected: TestFilter,
     onSelected: (TestFilter) -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Horizontal scroll keeps every chip reachable on narrow screens
+    // without introducing a foundation FlowRow dependency.
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         TestFilter.entries.forEach { filter ->
             FilterChip(
                 selected = selected == filter,
@@ -181,14 +183,19 @@ private fun TestAppCard(
                         text = row.appName,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         text = "${row.developerLabel} · ${row.packageName}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 if (row.status != null) {
+                    Spacer(Modifier.width(12.dp))
                     StatusPill(
                         text = assignmentStatusLabel(row.status),
                         tone = assignmentStatusTone(row.status),
@@ -214,7 +221,9 @@ private fun TestAppCard(
                 Spacer(Modifier.height(6.dp))
                 LinearProgressIndicator(
                     progress = { row.progress.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp),
                     strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
                     trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     color = MaterialTheme.colorScheme.primary,

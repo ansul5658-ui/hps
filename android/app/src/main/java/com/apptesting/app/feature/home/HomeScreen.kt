@@ -31,7 +31,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -222,8 +223,12 @@ private fun HeaderBar(displayName: String, unread: Int) {
                 text = displayName,
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
+        // Softly-tinted circular affordance for the bell — reads as a
+        // tappable control at a glance rather than a floating icon.
         BadgedBox(
             badge = {
                 if (unread > 0) {
@@ -233,11 +238,16 @@ private fun HeaderBar(displayName: String, unread: Int) {
                 }
             },
         ) {
-            IconButton(onClick = { /* TODO(nav): open notifications */ }) {
+            FilledTonalIconButton(
+                onClick = { /* TODO(nav): open notifications */ },
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+            ) {
                 Icon(
                     imageVector = Icons.Rounded.Notifications,
                     contentDescription = stringResource(R.string.home_notifications),
-                    tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
         }
@@ -282,6 +292,8 @@ private fun ActiveGroupCard(name: String?, email: String?) {
                             text = name,
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         if (email != null && email.isNotBlank()) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -357,13 +369,18 @@ private fun AssignmentPreviewRow(row: HomeAssignmentRow) {
                         text = row.appName,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         text = "${row.daysCompleted} of ${row.daysRequired} days · ${row.coinReward} Coins",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
+                Spacer(Modifier.width(12.dp))
                 StatusPill(
                     text = assignmentStatusLabel(row.status),
                     tone = assignmentStatusTone(row.status),
@@ -372,7 +389,9 @@ private fun AssignmentPreviewRow(row: HomeAssignmentRow) {
             Spacer(Modifier.height(12.dp))
             LinearProgressIndicator(
                 progress = { row.progress.coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp),
                 strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
                 color = MaterialTheme.colorScheme.primary,

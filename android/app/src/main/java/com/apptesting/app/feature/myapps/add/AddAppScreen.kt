@@ -44,6 +44,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -174,12 +176,17 @@ private fun Stepper(steps: List<StepMeta>, current: Int) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         steps.forEachIndexed { index, meta ->
             val done = index < current
             val active = index == current
+            val stateLabel = when {
+                done -> "completed"
+                active -> "in progress"
+                else -> "upcoming"
+            }
             Surface(
                 shape = CircleShape,
                 color = when {
@@ -187,7 +194,12 @@ private fun Stepper(steps: List<StepMeta>, current: Int) {
                     active -> MaterialTheme.colorScheme.primaryContainer
                     else -> MaterialTheme.colorScheme.surfaceVariant
                 },
-                modifier = Modifier.size(36.dp),
+                modifier = Modifier
+                    .size(36.dp)
+                    .semantics {
+                        contentDescription =
+                            "Step ${index + 1} of ${steps.size}: ${meta.label}, $stateLabel"
+                    },
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
@@ -287,6 +299,7 @@ private fun StepPlay(
         label = { Text("Play Store URL") },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
+        leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
         keyboardOptions = KeyboardOptions(
             keyboardType = KeyboardType.Uri,
             imeAction = ImeAction.Next,
@@ -298,6 +311,7 @@ private fun StepPlay(
         label = { Text("Closed-testing / opt-in URL") },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
+        leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
         keyboardOptions = KeyboardOptions(
             keyboardType = KeyboardType.Uri,
             imeAction = ImeAction.Done,

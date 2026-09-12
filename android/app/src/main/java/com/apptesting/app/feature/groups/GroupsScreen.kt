@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,6 +34,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -42,10 +45,15 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.R
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import com.apptesting.app.core.designsystem.component.AppIconAvatar
 import com.apptesting.app.core.designsystem.component.EmptyState
 import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
+import com.apptesting.app.core.designsystem.component.ScreenHeader
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.model.GroupState
@@ -57,6 +65,7 @@ fun GroupsScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
@@ -75,16 +84,9 @@ fun GroupsScreen(
                 .padding(PaddingValues(horizontal = 20.dp, vertical = 16.dp))
                 .background(MaterialTheme.colorScheme.background),
         ) {
-            Text(
-                text = stringResource(R.string.nav_groups),
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onBackground,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "Admin-managed Google Groups you can join for closed testing.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            ScreenHeader(
+                title = stringResource(R.string.nav_groups),
+                subtitle = "Admin-managed Google Groups you can join for closed testing.",
             )
             Spacer(Modifier.height(16.dp))
             when (val s = state) {
@@ -110,7 +112,12 @@ fun GroupsScreen(
                                     row = row,
                                     onJoin = { viewModel.onJoin(row.id) },
                                     onLeave = { viewModel.onLeave(row.id) },
-                                    onCopyEmail = { clipboard.setText(AnnotatedString(row.googleGroupEmail)) },
+                                    onCopyEmail = {
+                                        if (row.googleGroupEmail.isNotBlank()) {
+                                            clipboard.setText(AnnotatedString(row.googleGroupEmail))
+                                            scope.launch { snackbar.showSnackbar("Email copied") }
+                                        }
+                                    },
                                 )
                             }
                         }
@@ -143,23 +150,35 @@ private fun GroupCard(
                         text = row.name,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         text = row.summary,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
+                Spacer(Modifier.width(12.dp))
                 val (label, tone) = groupStateToPill(row.state, row.isMember)
                 StatusPill(text = label, tone = tone)
             }
 
             Spacer(Modifier.height(14.dp))
 
+            val emailCd = "Google Group email ${row.googleGroupEmail}. Tap to copy."
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onCopyEmail),
+                    .heightIn(min = 40.dp)
+                    .clickable(
+                        onClick = onCopyEmail,
+                        role = Role.Button,
+                        onClickLabel = "Copy email",
+                    )
+                    .semantics { contentDescription = emailCd },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
@@ -173,6 +192,8 @@ private fun GroupCard(
                     text = row.googleGroupEmail.ifBlank { "No Google Group email set" },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
 

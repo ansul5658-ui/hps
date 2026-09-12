@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -177,17 +178,21 @@ private fun ProfileHeader(name: String, email: String, joinedIso: String) {
             }
         }
         Spacer(Modifier.width(16.dp))
-        Column {
+        Column(Modifier.weight(1f)) {
             Text(
                 text = name,
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (email.isNotBlank()) {
                 Text(
                     text = email,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Text(
@@ -272,11 +277,15 @@ private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier
                 text = value,
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -295,6 +304,8 @@ private fun TransactionRow(tx: ProfileTransactionRow) {
                 text = tx.reason,
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = tx.whenIso,
@@ -302,6 +313,7 @@ private fun TransactionRow(tx: ProfileTransactionRow) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        Spacer(Modifier.width(12.dp))
         val (signPrefix, tint) = when (tx.kind) {
             CoinTransactionKind.Earn, CoinTransactionKind.Bonus ->
                 "+" to MaterialTheme.colorScheme.tertiary
@@ -314,6 +326,7 @@ private fun TransactionRow(tx: ProfileTransactionRow) {
             text = "$signPrefix${tx.amount} Coins",
             style = MaterialTheme.typography.titleMedium,
             color = tint,
+            maxLines = 1,
         )
     }
 }

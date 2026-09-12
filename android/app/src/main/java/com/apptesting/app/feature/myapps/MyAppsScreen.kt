@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -38,6 +39,7 @@ import com.apptesting.app.core.designsystem.component.AppIconAvatar
 import com.apptesting.app.core.designsystem.component.EmptyState
 import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
+import com.apptesting.app.core.designsystem.component.ScreenHeader
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.model.AppApprovalStatus
@@ -87,36 +89,25 @@ fun MyAppsScreen(
 
 @Composable
 private fun Header(onAddApp: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = stringResource(R.string.nav_my_apps),
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onBackground,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "Apps you've submitted for testing.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        FilledTonalButton(
-            onClick = onAddApp,
-            shape = MaterialTheme.shapes.large,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Add,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(stringResource(R.string.action_add_app))
-        }
-    }
+    ScreenHeader(
+        title = stringResource(R.string.nav_my_apps),
+        subtitle = "Apps you've submitted for testing.",
+        trailing = {
+            Spacer(Modifier.width(12.dp))
+            FilledTonalButton(
+                onClick = onAddApp,
+                shape = MaterialTheme.shapes.large,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(stringResource(R.string.action_add_app))
+            }
+        },
+    )
 }
 
 @Composable
@@ -136,45 +127,47 @@ private fun MyAppCard(row: MyAppRow) {
                         text = row.name,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         text = "${row.packageName} · v${row.versionName}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
+                Spacer(Modifier.width(12.dp))
                 val (label, tone) = approvalStatusToPill(row.approvalStatus)
                 StatusPill(text = label, tone = tone)
             }
             Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Rounded.People,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = "${row.testerCount} testers · ${row.completedTesterCount} completed",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.width(14.dp))
-                Icon(
-                    imageVector = Icons.Rounded.Group,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = row.activeGroupName ?: "Not in a group yet",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            // Testers on line 1, group on line 2 — keeps both readable at narrow widths.
+            MetaLine(icon = Icons.Rounded.People, text = "${row.testerCount} testers · ${row.completedTesterCount} completed")
+            Spacer(Modifier.height(4.dp))
+            MetaLine(icon = Icons.Rounded.Group, text = row.activeGroupName ?: "Not in a group yet")
         }
+    }
+}
+
+@Composable
+private fun MetaLine(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
