@@ -8,6 +8,7 @@ import com.apptesting.app.core.model.GroupMember
 import com.apptesting.app.core.model.Notification
 import com.apptesting.app.core.model.TestAssignment
 import com.apptesting.app.core.model.User
+import com.apptesting.app.core.model.UserRole
 import com.apptesting.app.core.util.TimeProvider
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -23,12 +24,34 @@ import kotlinx.coroutines.flow.onStart
  */
 private const val LOAD_DELAY_MS = 350L
 
-internal class MockUserRepository(private val store: MockStore) : UserRepository {
+internal class MockUserRepository(private val store: MockStore) : UserRepository, AuthGateway {
     override val currentUser: Flow<User?> = store.currentUser.onStart { delay(LOAD_DELAY_MS) }
+
     override suspend fun signOut() {
         // NOTE: not truly meaningful with mock data; wiping the user lets the
         // sign-in flow re-appear so the flow is walkable end-to-end.
         store.currentUser.value = null
+    }
+
+    // ---- AuthGateway ---------------------------------------------------
+    override fun isConfigured(): Boolean = false
+    override fun webClientId(): String? = null
+    override suspend fun signInWithGoogleIdToken(idToken: String): Result<Unit> =
+        Result.failure(UnsupportedOperationException("Mock repository can't verify a Google ID token."))
+
+    override suspend fun signInAsDemoUser(): Result<Unit> {
+        // Restore the demo user so post-sign-out flows land back on populated screens.
+        store.currentUser.value = User(
+            id = "u_me",
+            displayName = "Developer",
+            email = "developer@example.com",
+            createdAtMillis = System.currentTimeMillis(),
+            termsAcceptedAtMillis = System.currentTimeMillis(),
+            coinBalance = 240,
+            trustScore = 72,
+            role = UserRole.Member,
+        )
+        return Result.success(Unit)
     }
 }
 

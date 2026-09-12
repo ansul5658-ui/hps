@@ -28,16 +28,22 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.apptesting.app.R
+import com.apptesting.app.core.data.ServiceLocator
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Bridge screen between the platform splash and the app. Currently just holds
- * for a short beat while future work decides whether to route to auth or main
- * based on Firebase Auth state.
+ * Bridge screen between the platform splash and the app.
+ *
+ * Now genuinely checks the current auth state: if a user is already signed
+ * in — either through Firebase persistence or the mock demo — we skip
+ * straight to Main. Otherwise we hand off to Sign In.
  */
 @Composable
 fun SplashScreen(
-    onFinished: () -> Unit,
+    onSignedIn: () -> Unit,
+    onNeedsSignIn: () -> Unit,
 ) {
     var visible by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
@@ -48,10 +54,16 @@ fun SplashScreen(
 
     LaunchedEffect(Unit) {
         visible = true
-        // TODO(auth): replace the delay with a real "is user already signed in?" check
-        // once FirebaseAuth is wired. Keeping a short beat so the transition feels intentional.
-        delay(650)
-        onFinished()
+        // Hold the splash briefly so the transition feels intentional.
+        delay(350)
+        // Read the current auth state. `first()` on a flow-of-nullables will
+        // suspend until we get the first emission; a stuck backend shouldn't
+        // freeze the launcher, so we bound it and treat timeout as "not
+        // signed in" (the user can retry from SignIn).
+        val user = withTimeoutOrNull(2_000L) {
+            ServiceLocator.userRepository.currentUser.first()
+        }
+        if (user != null) onSignedIn() else onNeedsSignIn()
     }
 
     Surface(

@@ -1,0 +1,55 @@
+rules_version = '2';
+
+// Phase 3 Step 1 — authenticated-user rules.
+//
+// Only what Step 1 actually exercises is opened up here:
+//   * users/{uid} — a signed-in user may read and merge-write their OWN
+//     profile document, restricted to the client-writable fields.
+//     Server-authoritative fields (role, coinBalance, trustScore,
+//     isSuspended) are refused; a Cloud Function must set them.
+//
+// Every other collection is denied for now — later phases will open reads
+// for apps, groups, testAssignments, etc. Rules should never be relaxed
+// beyond what the current step actually needs.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Only fields the client is allowed to set on its own users/{uid} doc.
+    function isProfileFieldsOnly(data) {
+      let allowed = ['displayName', 'email', 'photoUrl', 'createdAt', 'lastSignedInAt'];
+      return data.keys().hasOnly(allowed);
+    }
+
+    // Extra guard: incoming data must NOT mutate server-authoritative fields.
+    function doesNotTouchServerFields(before, after) {
+      return !after.diff(before).affectedKeys().hasAny(
+        ['role', 'coinBalance', 'trustScore', 'isSuspended']
+      );
+    }
+
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // First create — the profile document doesn't exist yet.
+      allow create: if request.auth != null
+        && request.auth.uid == userId
+        && isProfileFieldsOnly(request.resource.data);
+
+      // Subsequent merges — must keep to allowed keys AND leave the
+      // server-authoritative fields alone.
+      allow update: if request.auth != null
+        && request.auth.uid == userId
+        && isProfileFieldsOnly(request.resource.data)
+        && doesNotTouchServerFields(resource.data, request.resource.data);
+
+      // Client never deletes its own profile — admin tooling handles that.
+      allow delete: if false;
+    }
+
+    // Everything else — locked down until the corresponding Firestore
+    // repository lands in a later phase step.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

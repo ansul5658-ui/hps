@@ -5,4 +5,8 @@ plugins {
     alias(libs.plugins.kotlin.android) apply false
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.kotlin.parcelize) apply false
+    // Declared here so the plugin classpath is available; applied in :app
+    // ONLY when google-services.json is present. Keeps the project buildable
+    // without Firebase config while still supporting the real setup.
+    alias(libs.plugins.google.services) apply false
 }

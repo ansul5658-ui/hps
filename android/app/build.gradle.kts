@@ -5,6 +5,27 @@ plugins {
     alias(libs.plugins.kotlin.parcelize)
 }
 
+// Apply the google-services plugin only if the developer has dropped the
+// real google-services.json into app/. This lets the project build in
+// two modes:
+//   * without google-services.json  — Firebase is inactive; the mock
+//     repositories back the UI. Useful for CI and early development.
+//   * with google-services.json     — Firebase Auth / Firestore /
+//     Storage / FCM initialize automatically via the plugin-generated
+//     resources and the ContentProvider merged into the manifest.
+// Nothing is faked in either mode.
+val googleServicesJson = project.file("google-services.json")
+if (googleServicesJson.exists()) {
+    apply(plugin = libs.plugins.google.services.get().pluginId)
+    logger.lifecycle("Firebase enabled — using ${googleServicesJson.name}")
+} else {
+    logger.lifecycle(
+        "google-services.json missing at ${googleServicesJson.absolutePath} — " +
+            "Firebase features are inactive; mock repositories will back the UI. " +
+            "See android/README.md for the console setup checklist.",
+    )
+}
+
 android {
     namespace = "com.apptesting.app"
     compileSdk = 35

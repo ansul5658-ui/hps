@@ -23,6 +23,41 @@ interface UserRepository {
     suspend fun signOut()
 }
 
+/**
+ * Optional capability implemented by [UserRepository] impls that can
+ * actually authenticate.
+ *
+ * The Firebase-backed repository implements this by exchanging a Google
+ * ID token (fetched by the UI through Credential Manager) for a Firebase
+ * credential. The mock repository implements it by restoring the demo
+ * user, so the sign-in flow stays walkable in "no Firebase" mode too.
+ */
+interface AuthGateway {
+    /** True when this gateway can perform a real Google-backed sign-in. */
+    fun isConfigured(): Boolean
+
+    /**
+     * Web OAuth 2.0 client ID needed to request a Google ID token from
+     * Credential Manager. Null when Firebase Auth isn't configured OR
+     * when Google Sign-In hasn't been enabled in the console.
+     */
+    fun webClientId(): String?
+
+    /**
+     * Complete sign-in using a Google ID token. Only meaningful when
+     * [isConfigured] is true.
+     */
+    suspend fun signInWithGoogleIdToken(idToken: String): Result<Unit>
+
+    /**
+     * Fallback used only by the mock repository so development can proceed
+     * without a Firebase project. The Firebase implementation returns a
+     * failed [Result].
+     */
+    suspend fun signInAsDemoUser(): Result<Unit> =
+        Result.failure(UnsupportedOperationException("Not supported by this gateway."))
+}
+
 interface AppRepository {
     /** Apps owned by [userId]. */
     fun observeMyApps(userId: String): Flow<List<AppSubmission>>

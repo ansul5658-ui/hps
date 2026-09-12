@@ -22,16 +22,18 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -39,29 +41,49 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.R
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /**
  * Sign-in landing screen.
  *
- * The Google sign-in button currently drives the local navigation flow only —
- * no real Firebase Auth call is fired yet. Adding Credential Manager +
- * FirebaseAuth is the next step; see the TODO in [SignInScreen].
+ * The Google button drives real Firebase Authentication via
+ * [AuthViewModel] when google-services.json is present; otherwise it falls
+ * back to the mock demo session so the flow stays walkable during early
+ * development. The UI itself is unchanged from Phase 2.
  */
 @Composable
-fun SignInScreen(onSignedIn: () -> Unit) {
-    var loading by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+fun SignInScreen(
+    onSignedIn: () -> Unit,
+    viewModel: AuthViewModel = viewModel(),
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background,
-    ) {
+    LaunchedEffect(state) {
+        when (val s = state) {
+            SignInUiState.Success -> {
+                viewModel.consume()
+                onSignedIn()
+            }
+            is SignInUiState.Error -> {
+                snackbar.showSnackbar(s.message)
+                viewModel.consume()
+            }
+            else -> Unit
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { inner ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .padding(inner)
                 .padding(horizontal = 28.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -105,19 +127,9 @@ fun SignInScreen(onSignedIn: () -> Unit) {
 
             Spacer(Modifier.weight(1f))
 
+            val loading = state is SignInUiState.Loading
             Button(
-                onClick = {
-                    if (!loading) {
-                        loading = true
-                        // TODO(auth): call CredentialManager + GoogleIdOption, then
-                        // FirebaseAuth.signInWithCredential. On success -> onSignedIn().
-                        // Currently drives navigation locally so the flow is walkable end-to-end.
-                        scope.launch {
-                            delay(700)
-                            onSignedIn()
-                        }
-                    }
-                },
+                onClick = { viewModel.onSignInPressed(context) },
                 enabled = !loading,
                 modifier = Modifier
                     .fillMaxWidth()

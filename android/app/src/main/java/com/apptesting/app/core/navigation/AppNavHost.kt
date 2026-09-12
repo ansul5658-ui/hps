@@ -17,8 +17,15 @@ import com.apptesting.app.feature.splash.SplashScreen
  *   1. Onboarding — Splash → SignIn → Terms.
  *   2. Main — a nested graph hosting the bottom-nav tabs (built in MainScaffold).
  *
- * The Main entry replaces the onboarding stack with popUpTo(Splash, inclusive)
- * so users can't back-swipe into the auth flow after signing in.
+ * Splash now reads the actual auth state:
+ *   * a signed-in user (Firebase persisted session, or the mock demo user)
+ *     goes straight to Main;
+ *   * a signed-out user goes to SignIn.
+ *
+ * Sign-in success routes to Terms so first-time users still see the
+ * acknowledgement. A returning user who was already signed in on splash
+ * skips both SignIn and Terms — an appropriate outcome given they must
+ * have accepted before.
  */
 @Composable
 fun AppNavHost() {
@@ -33,8 +40,12 @@ fun AppNavHost() {
         popExitTransition = { fadeOut(tween(180)) },
     ) {
         onboardingGraph(
-            onSplashFinished = {
-                // TODO(auth): if Firebase Auth already has a signed-in user, route straight to Main.
+            onSignedInAtSplash = {
+                navController.navigate(Routes.Main) {
+                    popUpTo(Routes.Splash) { inclusive = true }
+                }
+            },
+            onNeedsSignInAtSplash = {
                 navController.navigate(Routes.SignIn) {
                     popUpTo(Routes.Splash) { inclusive = true }
                 }
@@ -64,11 +75,17 @@ fun AppNavHost() {
 }
 
 private fun NavGraphBuilder.onboardingGraph(
-    onSplashFinished: () -> Unit,
+    onSignedInAtSplash: () -> Unit,
+    onNeedsSignInAtSplash: () -> Unit,
     onSignInSuccess: () -> Unit,
     onTermsAccepted: () -> Unit,
 ) {
-    composable(Routes.Splash) { SplashScreen(onFinished = onSplashFinished) }
+    composable(Routes.Splash) {
+        SplashScreen(
+            onSignedIn = onSignedInAtSplash,
+            onNeedsSignIn = onNeedsSignInAtSplash,
+        )
+    }
     composable(Routes.SignIn) { SignInScreen(onSignedIn = onSignInSuccess) }
     composable(Routes.Terms) { TermsScreen(onAccepted = onTermsAccepted) }
 }
