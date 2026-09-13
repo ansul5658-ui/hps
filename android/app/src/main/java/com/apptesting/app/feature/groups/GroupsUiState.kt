@@ -11,15 +11,17 @@ sealed interface GroupsUiState {
     data class Content(val rows: List<GroupRow>) : GroupsUiState
 }
 
+/**
+ * Minimal row used by the list card. Join/leave actions and the Google
+ * Group email now live on the Group Details screen, so the list stays
+ * uncluttered.
+ */
 @Immutable
 data class GroupRow(
     val id: String,
     val name: String,
     val summary: String,
-    val googleGroupEmail: String,
     val memberCount: Int,
-    val memberCap: Int,
     val state: GroupState,
     val isMember: Boolean,
-    val canJoin: Boolean,
 )

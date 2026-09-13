@@ -39,7 +39,14 @@ object Routes {
     // Feature detail routes (registered but wired to placeholder screens for now)
     const val AddApp = "myApps/add"
     const val Coins = "profile/coins"
+
+    // Group details — nav arg placeholder is filled by [groupDetailsRoute].
+    const val GroupDetailsArg = "groupId"
+    const val GroupDetails = "groups/details/{$GroupDetailsArg}"
 }
+
+/** Build a concrete route to [Routes.GroupDetails] for [groupId]. */
+fun groupDetailsRoute(groupId: String): String = "groups/details/$groupId"
 
 /** One tab of the bottom-navigation bar. */
 enum class TopLevelTab(

@@ -71,6 +71,13 @@ interface AppRepository {
 
 interface GroupRepository {
     fun observeGroups(): Flow<List<Group>>
+
+    /**
+     * Observe a single group. Emits `null` when the document doesn't exist
+     * so the caller can render a not-found state instead of hanging.
+     */
+    fun observeGroup(groupId: String): Flow<Group?>
+
     fun observeMembershipFor(userId: String): Flow<List<GroupMember>>
     suspend fun requestJoin(groupId: String, userId: String): Result<Unit>
     suspend fun leave(groupId: String, userId: String): Result<Unit>

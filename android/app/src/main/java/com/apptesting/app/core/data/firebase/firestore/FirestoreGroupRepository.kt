@@ -36,6 +36,10 @@ internal class FirestoreGroupRepository(
         groups.snapshots()
             .map { snap -> snap.documents.map { it.toGroup() } }
 
+    override fun observeGroup(groupId: String): Flow<Group?> =
+        groups.document(groupId).snapshots()
+            .map { doc -> if (doc.exists()) doc.toGroup() else null }
+
     override fun observeMembershipFor(userId: String): Flow<List<GroupMember>> =
         firestore.collection("users").document(userId).collection("memberships")
             .snapshots()

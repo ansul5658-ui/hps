@@ -81,6 +81,11 @@ internal class MockGroupRepository(private val store: MockStore) : GroupReposito
     override fun observeGroups(): Flow<List<Group>> =
         store.groups.onStart { delay(LOAD_DELAY_MS) }
 
+    override fun observeGroup(groupId: String): Flow<Group?> =
+        store.groups
+            .map { list -> list.firstOrNull { it.id == groupId } }
+            .onStart { delay(LOAD_DELAY_MS) }
+
     override fun observeMembershipFor(userId: String): Flow<List<GroupMember>> =
         store.memberships
             .map { list -> list.filter { it.userId == userId } }

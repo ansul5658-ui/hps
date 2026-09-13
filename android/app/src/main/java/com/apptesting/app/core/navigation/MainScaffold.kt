@@ -16,11 +16,14 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.apptesting.app.feature.groups.GroupsScreen
+import com.apptesting.app.feature.groups.details.GroupDetailsScreen
 import com.apptesting.app.feature.home.HomeScreen
 import com.apptesting.app.feature.myapps.MyAppsScreen
 import com.apptesting.app.feature.myapps.add.AddAppScreen
@@ -59,13 +62,32 @@ fun MainScaffold(
             composable(Routes.MyApps) {
                 MyAppsScreen(onAddApp = { innerNav.navigate(Routes.AddApp) })
             }
-            composable(Routes.Groups) { GroupsScreen() }
+            composable(Routes.Groups) {
+                GroupsScreen(
+                    onGroupClick = { groupId ->
+                        innerNav.navigate(groupDetailsRoute(groupId))
+                    },
+                )
+            }
             composable(Routes.Profile) {
                 ProfileScreen(onSignOut = onSignOut)
             }
 
             composable(Routes.AddApp) {
                 AddAppScreen(onDone = { innerNav.popBackStack() })
+            }
+
+            composable(
+                route = Routes.GroupDetails,
+                arguments = listOf(
+                    navArgument(Routes.GroupDetailsArg) { type = NavType.StringType },
+                ),
+            ) { backStackEntry ->
+                val groupId = backStackEntry.arguments?.getString(Routes.GroupDetailsArg).orEmpty()
+                GroupDetailsScreen(
+                    groupId = groupId,
+                    onBack = { innerNav.popBackStack() },
+                )
             }
         }
     }
