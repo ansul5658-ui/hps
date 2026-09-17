@@ -1,2 +1,20 @@
 saas/.next/
 saas/node_modules/
+
+# Flutter pdfviewer_new
+pdfviewer_new/.dart_tool/
+pdfviewer_new/.flutter-plugins
+pdfviewer_new/.flutter-plugins-dependencies
+pdfviewer_new/build/
+pdfviewer_new/android/.gradle/
+pdfviewer_new/android/.kotlin/
+pdfviewer_new/android/build/
+pdfviewer_new/android/app/build/
+pdfviewer_new/android/local.properties
+pdfviewer_new/android/key.properties
+pdfviewer_new/android/**/*.jks
+pdfviewer_new/android/**/*.keystore
+pdfviewer_new/ios/Flutter/ephemeral/
+pdfviewer_new/ios/Flutter/Generated.xcconfig
+pdfviewer_new/ios/Flutter/flutter_export_environment.sh
+pdfviewer_new/linux/flutter/ephemeral/
