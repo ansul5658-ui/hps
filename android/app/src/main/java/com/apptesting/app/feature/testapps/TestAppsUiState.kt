@@ -10,11 +10,43 @@ sealed interface TestAppsUiState {
     @Immutable
     data class Content(
         val filter: TestFilter,
+        /** Section 1 — free, no coin commitment. */
+        val quickTests: List<QuickTestCandidate>,
+        val quickTestsRemainingToday: Int,
+        val quickTestDailyLimit: Int,
+        /** Section 2 — structured multi-day commitments. */
         val rows: List<TestRow>,
-    ) : TestAppsUiState
+        /**
+         * Read-only balance from `users/{uid}.coinBalance`.
+         *
+         * The new Available/Locked/Forfeited wallet is a later batch, so this
+         * is displayed as a plain total and nothing is claimed about what is
+         * locked or spendable.
+         */
+        val coinBalance: Int,
+        val unreadNotifications: Int,
+    ) : TestAppsUiState {
+        val hasQuickTestQuota: Boolean get() = quickTestsRemainingToday > 0
+    }
 }
 
 enum class TestFilter { All, InProgress, Available }
+
+/**
+ * One Quick Test card.
+ *
+ * Deliberately carries no coin field of any kind. Quick Tests cost nothing and
+ * earn nothing, and a card that cannot express an amount cannot accidentally
+ * start implying one.
+ */
+@Immutable
+data class QuickTestCandidate(
+    val appId: String,
+    val appName: String,
+    val packageName: String,
+    val developerLabel: String,
+    val description: String?,
+)
 
 @Immutable
 data class TestRow(
@@ -23,7 +55,6 @@ data class TestRow(
     val appName: String,
     val packageName: String,
     val developerLabel: String,
-    val coinReward: Int,
     val daysRequired: Int,
     val daysCompleted: Int,
     val status: AssignmentStatus?,

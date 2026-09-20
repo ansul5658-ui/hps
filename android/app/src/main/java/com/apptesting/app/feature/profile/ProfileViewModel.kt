@@ -1,5 +1,6 @@
 package com.apptesting.app.feature.profile
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.apptesting.app.core.data.AppRepository
@@ -13,6 +14,7 @@ import com.apptesting.app.core.model.CoinTransaction
 import com.apptesting.app.core.model.CoinTransactionKind
 import com.apptesting.app.core.model.TestAssignment
 import com.apptesting.app.core.model.User
+import com.apptesting.app.core.model.UserRole
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +28,8 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
+
+private const val TAG = "AUTH_DEBUG"
 
 class ProfileViewModel(
     private val users: UserRepository,
@@ -58,13 +62,16 @@ class ProfileViewModel(
     private fun observe() {
         users.currentUser
             .flatMapLatest { user ->
-                if (user == null) flowOf<ProfileUiState>(ProfileUiState.Loading)
-                else combine(
-                    apps.observeMyApps(user.id),
-                    assignments.observeAssignmentsForUser(user.id),
-                    coins.observeTransactions(user.id),
-                ) { myApps, myAssignments, transactions ->
-                    build(user, myApps, myAssignments, transactions)
+                if (user == null) {
+                    flowOf<ProfileUiState>(ProfileUiState.Loading)
+                } else {
+                    combine(
+                        apps.observeMyApps(user.id).catch { e -> Log.e(TAG, "[PROFILE] observeMyApps failed", e); emit(emptyList()) },
+                        assignments.observeAssignmentsForUser(user.id).catch { e -> Log.e(TAG, "[PROFILE] observeAssignmentsForUser failed", e); emit(emptyList()) },
+                        coins.observeTransactions(user.id).catch { e -> Log.e(TAG, "[PROFILE] observeTransactions failed", e); emit(emptyList()) },
+                    ) { myApps, myAssignments, transactions ->
+                        build(user, myApps, myAssignments, transactions)
+                    }
                 }
             }
             .catch { emit(ProfileUiState.Error(it.message ?: "Failed to load your profile.")) }
@@ -78,9 +85,23 @@ class ProfileViewModel(
         myAssignments: List<TestAssignment>,
         transactions: List<CoinTransaction>,
     ): ProfileUiState {
+        Log.d("ADMIN_DEBUG", "Current UID: ${user.id}")
+        Log.d("ADMIN_DEBUG", "Current role: ${user.role}")
+        Log.d("ADMIN_DEBUG", "isAdmin: ${user.role == UserRole.Admin}")
         val earned = transactions
             .filter { it.kind == CoinTransactionKind.Earn || it.kind == CoinTransactionKind.Bonus }
             .sumOf { it.amount }
+        val historyItems = myAssignments.map { a ->
+            ProfileHistoryItem(
+                id = a.id,
+                appId = a.appId,
+                appName = a.appId.substringAfter("app_").replaceFirstChar { it.uppercase() },
+                daysCompleted = a.daysCompleted,
+                daysRequired = a.daysRequired,
+                coinReward = a.coinReward,
+                status = a.status,
+            )
+        }
         return ProfileUiState.Content(
             displayName = user.displayName.ifBlank { "Developer" },
             email = user.email,
@@ -90,6 +111,7 @@ class ProfileViewModel(
             appsSubmitted = myApps.size,
             testsCompleted = myAssignments.count { it.status == AssignmentStatus.Completed },
             totalCoinsEarned = earned,
+            isAdmin = user.role == UserRole.Admin,
             recentTransactions = transactions.take(5).map {
                 ProfileTransactionRow(
                     id = it.id,
@@ -99,6 +121,7 @@ class ProfileViewModel(
                     whenIso = df.format(Date(it.createdAtMillis)),
                 )
             },
+            historyAssignments = historyItems,
         )
     }
 }

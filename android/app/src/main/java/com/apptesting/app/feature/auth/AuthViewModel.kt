@@ -28,11 +28,6 @@ private const val TAG = "AUTH_DEBUG"
  *     Firebase auth state listener drives the rest of the app.
  *   * Mock mode — no real auth is performed; the demo user is restored so
  *     the flow still lands on Terms → Main.
- *
- * Diagnostic logging (`adb logcat -s $TAG`) prints one line per step so a
- * hang in any single call is trivially localizable. A hard [FIREBASE_TIMEOUT_MS]
- * timeout on the Firebase-side call guarantees the Loading state never
- * persists forever, no matter how misbehaved the SDK or network is.
  */
 class AuthViewModel(
     private val users: UserRepository,
@@ -50,15 +45,15 @@ class AuthViewModel(
     init {
         Log.d(
             TAG,
-            "AuthViewModel init | gateway=${gateway?.javaClass?.simpleName} " +
+            "[AUTH] AuthViewModel init | gateway=${gateway?.javaClass?.simpleName} " +
                 "isFirebaseMode=$isFirebaseMode",
         )
     }
 
     fun onSignInPressed(context: Context) {
-        Log.d(TAG, "onSignInPressed | current state=${_state.value}")
+        Log.d(TAG, "[AUTH] Google sign-in button pressed")
         if (_state.value is SignInUiState.Loading) {
-            Log.d(TAG, "onSignInPressed | already loading — ignoring tap")
+            Log.d(TAG, "[AUTH] Already loading — ignoring tap")
             return
         }
         _state.value = SignInUiState.Loading
@@ -66,7 +61,7 @@ class AuthViewModel(
             try {
                 val g = gateway
                 if (g == null) {
-                    Log.w(TAG, "no AuthGateway on the current UserRepository")
+                    Log.w(TAG, "[AUTH] No AuthGateway available on current UserRepository")
                     _state.value = SignInUiState.Error(
                         "No authentication gateway available.",
                     )
@@ -74,7 +69,7 @@ class AuthViewModel(
                 }
 
                 if (!g.isConfigured()) {
-                    Log.d(TAG, "mock branch — restoring demo user")
+                    Log.d(TAG, "[AUTH] Mock branch — restoring demo user")
                     delay(SHORT_TRANSITION_MS)
                     val demo = g.signInAsDemoUser()
                     _state.value = demo.fold(
@@ -91,7 +86,7 @@ class AuthViewModel(
                 val webClientId = g.webClientId()
                 Log.d(
                     TAG,
-                    "webClientId present=${!webClientId.isNullOrBlank()} " +
+                    "[AUTH] webClientId present=${!webClientId.isNullOrBlank()} " +
                         "length=${webClientId?.length ?: 0}",
                 )
                 if (webClientId.isNullOrBlank()) {
@@ -103,9 +98,9 @@ class AuthViewModel(
                     return@launch
                 }
 
-                Log.d(TAG, "requesting Google credential via Credential Manager")
+                Log.d(TAG, "[AUTH] Credential Manager request started")
                 val tokenResult = GoogleSignInHelper.requestIdToken(context, webClientId)
-                Log.d(TAG, "credential result: ${tokenResult::class.simpleName}")
+                Log.d(TAG, "[AUTH] Credential Manager result: ${tokenResult::class.simpleName}")
                 when (tokenResult) {
                     is GoogleSignInHelper.Result.Cancelled -> {
                         _state.value = SignInUiState.Idle
@@ -120,17 +115,13 @@ class AuthViewModel(
                         _state.value = SignInUiState.Error(tokenResult.message)
                     }
                     is GoogleSignInHelper.Result.Token -> {
-                        Log.d(
-                            TAG,
-                            "ID token obtained — length=${tokenResult.idToken.length}; " +
-                                "handing to FirebaseAuth",
-                        )
+                        Log.d(TAG, "[AUTH] Google credential received")
                         val signInResult = try {
                             withTimeout(FIREBASE_TIMEOUT_MS) {
                                 g.signInWithGoogleIdToken(tokenResult.idToken)
                             }
                         } catch (e: TimeoutCancellationException) {
-                            Log.e(TAG, "FirebaseAuth+Firestore timed out after ${FIREBASE_TIMEOUT_MS}ms")
+                            Log.e(TAG, "[AUTH] FirebaseAuth+Firestore timed out after ${FIREBASE_TIMEOUT_MS}ms")
                             Result.failure(
                                 IllegalStateException(
                                     "Sign-in timed out after ${FIREBASE_TIMEOUT_MS / 1000}s. " +
@@ -138,11 +129,14 @@ class AuthViewModel(
                                 ),
                             )
                         }
-                        Log.d(TAG, "signInWithGoogleIdToken result — success=${signInResult.isSuccess}")
+                        Log.d(TAG, "[AUTH] signInWithGoogleIdToken result — success=${signInResult.isSuccess}")
                         _state.value = signInResult.fold(
-                            onSuccess = { SignInUiState.Success },
+                            onSuccess = {
+                                Log.d(TAG, "[AUTH] Sign-in flow completed")
+                                SignInUiState.Success
+                            },
                             onFailure = {
-                                Log.w(TAG, "signInWithGoogleIdToken failed: ${it.message}")
+                                Log.w(TAG, "[AUTH] signInWithGoogleIdToken failed: ${it.message}")
                                 SignInUiState.Error(
                                     it.message ?: "Sign-in failed.",
                                 )
@@ -151,10 +145,10 @@ class AuthViewModel(
                     }
                 }
             } catch (t: CancellationException) {
-                Log.d(TAG, "coroutine cancelled — likely ViewModel cleared")
+                Log.d(TAG, "[AUTH] Coroutine cancelled — likely ViewModel cleared")
                 throw t
             } catch (t: Throwable) {
-                Log.e(TAG, "unexpected sign-in error", t)
+                Log.e(TAG, "[AUTH] Unexpected sign-in error", t)
                 _state.value = SignInUiState.Error(t.message ?: "Sign-in failed.")
             }
         }
@@ -171,7 +165,6 @@ class AuthViewModel(
         /**
          * Ceiling on the FirebaseAuth + Firestore round-trip. Well above
          * normal server latency but low enough that a broken configuration
-         * (rules deny, offline persistence stuck queue, invalid credential)
          * surfaces as an error the user can act on instead of an infinite
          * spinner.
          */

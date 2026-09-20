@@ -1,23 +1,25 @@
 rules_version = '2';
 
-// Phase 3 Step 2 — Firestore data layer.
+// AppTesting Firestore security rules.
 //
-// The client is a Firestore-first Android app. These rules encode what the
-// client is allowed to do without any Cloud Function present, and are
-// explicitly designed so that when Cloud Functions land the same rules
-// keep the client honest.
-//
-// Guiding principles:
-//   * Server-authoritative fields (coinBalance, trustScore, role,
-//     isSuspended on users; daysCompleted, coinReward on assignments;
-//     memberCount on groups) are NEVER written by the client. Rules
-//     refuse any request that mutates them.
-//   * Ownership is the primary access boundary. A user can only
-//     read/write objects tied to their own uid.
-//   * `testingLogs` uses deterministic doc IDs ("{aid}__{yyyy-MM-dd}")
-//     so a repeat call for the same assignment+day fails at the storage
-//     layer regardless of client behavior. The rule below is the second
-//     line of defense.
+// SECURITY MODEL
+//   * Default deny. Every collection gets an explicit match block that opens
+//     up only what a repository actually needs.
+//   * Privileged writes do not exist for clients at all. App approval status,
+//     user suspension, group documents and assignment creation are refused
+//     here for everyone — including admins — and happen only through callable
+//     Cloud Functions that run with Admin SDK credentials and re-verify the
+//     caller's role server-side. Admin rights in these rules are therefore
+//     strictly READ privileges, scoped to the collections the admin console
+//     actually lists.
+//   * `users.role` is never client-writable, which is what makes isAdmin()
+//     safe to consult: it cannot be self-granted from the app.
+//   * A suspended account keeps read access and can still sign out or leave a
+//     group, but cannot submit apps, join groups, log testing days or claim
+//     completion.
+//   * `testingLogs` uses deterministic doc IDs ("{aid}__{yyyy-MM-dd}") AND a
+//     server-derived day key, so neither a repeat call nor a tampered device
+//     clock can manufacture extra testing days.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -25,6 +27,49 @@ service cloud.firestore {
 
     function signedIn() { return request.auth != null; }
     function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+
+    function callerPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+    function callerExists() {
+      return signedIn() && exists(callerPath());
+    }
+
+    // READ-ONLY privilege. See the security model note above: no rule in this
+    // file grants an admin any write.
+    //
+    // `.get('role', 'member')` (not `.role`) is required, same reasoning as
+    // isSuspended() below: `role` is set only by manually promoting an
+    // account (no Cloud Function or client create path ever writes it), so
+    // ordinary user docs have no such key. The default must stay the
+    // non-admin state ('member') so a missing key can never grant admin.
+    // This had no observed production impact — every call site in this file
+    // is `isSelf(...) || isAdmin()` or `isAdmin() || (owner check)`, and CEL
+    // resolves `a || b` to `true` when the non-erroring side is true — but it
+    // is the same defect class as the isSuspended() bug that broke
+    // testingLogs creates, so it is closed here before it causes one.
+    function isAdmin() {
+      return callerExists() && get(callerPath()).data.get('role', 'member') == 'admin';
+    }
+
+    // A caller with no profile document yet (brand new sign-in) counts as
+    // active, so the first-run profile write is never locked out.
+    //
+    // `.get('isSuspended', false)` (not `.isSuspended`) is required: the
+    // client-writable create fields never include `isSuspended` (only a
+    // suspension by an admin Cloud Function sets it), so most user docs have
+    // no such key at all. Dot access on a missing map key is a rules
+    // evaluation ERROR, not `null`/`false` — confirmed via the Rules
+    // Playground against a real production user doc with no `isSuspended`
+    // field ("Property isSuspended is undefined on object"), which was the
+    // actual root cause of every testingLogs create failing PERMISSION_DENIED
+    // (activeUser() erroring out on the very first clause of that rule).
+    // `Map.get(key, default)` reads the same field without throwing when the
+    // key is absent.
+    function isSuspended() {
+      return callerExists() && get(callerPath()).data.get('isSuspended', false) == true;
+    }
+    function activeUser() { return signedIn() && !isSuspended(); }
 
     // "The incoming write only touches these keys."
     function onlyChanges(before, after, keys) {
@@ -36,14 +81,49 @@ service cloud.firestore {
       return data.keys().hasOnly(keys);
     }
 
+    // Server clock, formatted to match the client's day key (UTC).
+    function pad2(n) {
+      return n < 10 ? '0' + string(n) : string(n);
+    }
+    function serverDayKey() {
+      return string(request.time.year())
+        + '-' + pad2(request.time.month())
+        + '-' + pad2(request.time.day());
+    }
+
+    function assignmentPath(assignmentId) {
+      return /databases/$(database)/documents/testingAssignments/$(assignmentId);
+    }
+
+    // The log's assignment must exist, belong to the caller, and still be in
+    // an active state.
+    //
+    // IMPORTANT: do not rewrite this as `let snapshot = exists(...) ? get(...) : null`.
+    // That form deploys with only a warning ("Invalid type. Received one of
+    // [null]. Expected one of [map]"), and passes the Firestore *emulator*
+    // rules tests, but is a real type-mismatch that should be avoided —
+    // confirmed via a real device against production that a live
+    // testingLogs create still fails PERMISSION_DENIED even with this `&&`
+    // form in place, so the null-ternary was NOT the (sole) cause of that
+    // failure. Root cause of the live PERMISSION_DENIED is still open — see
+    // Batch 4 report. This rewrite is kept regardless because the
+    // null-vs-map type mismatch is a genuine defect independent of that
+    // investigation, and the `&&` chain below is the same pattern used
+    // safely elsewhere in this file.
+    function ownsActiveAssignment(assignmentId) {
+      return exists(assignmentPath(assignmentId))
+        && get(assignmentPath(assignmentId)).data.testerId == request.auth.uid
+        && get(assignmentPath(assignmentId)).data.status in ['ready', 'inProgress'];
+    }
+
     // Fields on `users/{uid}` the client may write on create.
     function userCreateAllowed(data, uid) {
       return onlyHas(data, ['uid', 'email', 'displayName', 'photoUrl', 'createdAt', 'updatedAt'])
         && data.uid == uid;
     }
 
-    // Fields on `users/{uid}` the client may write on update. Rules also
-    // forbid touching server-authoritative fields.
+    // Fields on `users/{uid}` the client may write on update. role,
+    // isSuspended, coinBalance and trustScore are absent by design.
     function userUpdateAllowed(before, after) {
       return onlyChanges(before, after,
         ['email', 'displayName', 'photoUrl', 'updatedAt']);
@@ -52,7 +132,9 @@ service cloud.firestore {
     // ---------- users ---------------------------------------------------
 
     match /users/{userId} {
-      allow read: if isSelf(userId);
+      // Admins read the roster for the admin console; everyone else sees
+      // only themselves.
+      allow read: if isSelf(userId) || isAdmin();
 
       allow create: if isSelf(userId)
         && userCreateAllowed(request.resource.data, userId);
@@ -64,19 +146,37 @@ service cloud.firestore {
 
       // Per-user append-only coin ledger. Only Cloud Functions write.
       match /coinTransactions/{txId} {
-        allow read: if isSelf(userId);
+        allow read: if isSelf(userId) || isAdmin();
         allow write: if false;
       }
 
-      // Per-user membership subcollection. Client is authoritative for
-      // "am I in this group"; a Cloud Function keeps groups.memberCount
-      // in sync later.
+      // Per-user membership. Creating one is server-authoritative (the
+      // joinGroup callable) so member cap, suspension and duplicate checks
+      // cannot be bypassed by writing this document directly. Leaving stays
+      // client-side — a user may always remove themselves.
       match /memberships/{groupId} {
-        allow read: if isSelf(userId);
-        allow create, update: if isSelf(userId)
-          && request.resource.data.userId == userId
-          && request.resource.data.groupId == groupId;
+        allow read: if isSelf(userId) || isAdmin();
+        allow create, update: if false;
         allow delete: if isSelf(userId);
+      }
+
+      // Per-user Quick Test daily counter. This document IS the rate limit:
+      // the startQuickTest transaction reads it, which locks it, so
+      // concurrent attempts serialize. A client that could write it could
+      // reset its own count to zero and take unlimited Quick Tests, so every
+      // client write is refused — including delete, which would do exactly
+      // that. The client reads it only to render "N left today".
+      match /quickTestDays/{dayKey} {
+        allow read: if isSelf(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      // Per-user-per-app Quick Test cooldown marker. Client-writable it would
+      // be a one-line cooldown bypass, so it is server-only. Read access lets
+      // the Apps screen grey out apps still in cooldown without a round trip.
+      match /quickTestApps/{appId} {
+        allow read: if isSelf(userId) || isAdmin();
+        allow write: if false;
       }
     }
 
@@ -88,9 +188,19 @@ service cloud.firestore {
       // not a rule — the mobile client already filters on `status`.
       allow read: if signedIn();
 
-      // Create: the owner must be the authed user, status must start at
-      // pendingReview, and only the client-writable fields may be set.
-      allow create: if signedIn()
+      // NOTE — Quick Test fields. `quickTestEnabled` (eligibility) and
+      // `lastSurfacedAt` (pool rotation cursor) are server-only. They are
+      // refused implicitly, because both the create and the update rule below
+      // are closed allow-lists and neither field is on them. Do NOT add
+      // either one to those lists: `quickTestEnabled` is what decides whether
+      // an app is surfaced at all, and `lastSurfacedAt` is what keeps the
+      // rotation fair, so a developer who could write either could promote
+      // their own app into every user's pool indefinitely.
+
+      // Create: the owner must be the authed user, the account must not be
+      // suspended, status must start at pendingReview, and only the
+      // client-writable fields may be set.
+      allow create: if activeUser()
         && request.resource.data.ownerId == request.auth.uid
         && request.resource.data.status == 'pendingReview'
         && onlyHas(request.resource.data, [
@@ -102,7 +212,8 @@ service cloud.firestore {
       // Update: only the owner can edit, they may change only these
       // profile fields, they can't advance the review status themselves,
       // and they can't change the ownerId (impersonation guard).
-      allow update: if signedIn()
+      // Review status moves only via the adminSetAppStatus callable.
+      allow update: if activeUser()
         && resource.data.ownerId == request.auth.uid
         && request.resource.data.ownerId == resource.data.ownerId
         && request.resource.data.status == resource.data.status
@@ -112,7 +223,7 @@ service cloud.firestore {
           'description', 'updatedAt'
         ]);
 
-      // Delete: owner only. Admin tooling for takedowns runs server-side.
+      // Delete: owner only. Admin takedowns run server-side.
       allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
     }
 
@@ -121,34 +232,88 @@ service cloud.firestore {
     match /groups/{groupId} {
       // Any signed-in user can discover groups.
       allow read: if signedIn();
-      // Groups are created and edited by admins only; the client-side
-      // admin console is not in scope for Step 2, so lock down all
-      // writes for now.
+      // Groups are created and edited only by the adminUpsertGroup callable,
+      // and memberCount only by syncGroupMemberCount.
       allow write: if false;
+
+      // Server-maintained mirror of who is in the group. Written only by
+      // syncGroupMemberCount; read by the owner of the row and by admins.
+      match /members/{memberId} {
+        allow read: if isSelf(memberId) || isAdmin();
+        allow write: if false;
+      }
+    }
+
+    // ---------- Quick Tests ---------------------------------------------
+
+    // Server-maintained discovery pool. Any signed-in user reads it to learn
+    // which apps to surface; nobody writes it from a client. Selection lives
+    // on the server precisely so it cannot be steered: a client-side ordering
+    // would let a caller reverse the rotation and pin the pool to the same
+    // apps, or to their own.
+    match /discovery/{docId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    // Quick Test sessions.
+    //
+    // Every client write is refused. Sessions exist only via the
+    // startQuickTest / completeQuickTest callables, which re-derive the day
+    // key, the timestamps, the daily count and the cooldown server-side. A
+    // client that could create one of these could bypass the daily limit, the
+    // cooldown and the suspension check in a single write; one that could
+    // update one could rewrite `openedAt` or `completedAt`.
+    //
+    // Read is scoped to the owner. Unlike testingLogs, a read of a document
+    // that does not exist is NOT tolerated here: `uid` is part of the
+    // deterministic id, so allowing a null resource would turn this into an
+    // oracle for "did user X Quick Test app Y on date Z". The client never
+    // needs that read — it learns its own state from the callable's return
+    // value and from users/{uid}/quickTestApps.
+    //
+    // `.get('uid', '')` rather than `.data.uid`: dot access on a missing key
+    // is a rules evaluation ERROR, not false. A malformed session document
+    // would otherwise deny the owner's whole query instead of just that row.
+    match /quickTestSessions/{sessionId} {
+      allow read: if isAdmin()
+        || (signedIn() && resource != null
+            && resource.data.get('uid', '') == request.auth.uid);
+      allow create, update, delete: if false;
     }
 
     // ---------- testingAssignments -------------------------------------
 
     match /testingAssignments/{assignmentId} {
       // A tester may read assignments assigned to them; a developer may
-      // read assignments referencing their app so they can see progress.
-      allow read: if signedIn() && (
+      // read assignments referencing their app so they can see progress;
+      // an admin may read the queue for the console.
+      //
+      // Deliberately strict about missing documents: assignment ids are
+      // deterministic ("{appId}__{testerId}"), so tolerating a null resource
+      // here would let anyone probe whether a given user is testing a given
+      // app. A lookup of a deleted assignment therefore surfaces as a
+      // permission error rather than "not found", which the repository
+      // reports as a generic failure.
+      allow read: if isAdmin() || (signedIn() && (
         resource.data.testerId == request.auth.uid
           || resource.data.developerId == request.auth.uid
-      );
+      ));
 
-      // The client cannot create assignments — a future admin flow /
-      // Cloud Function does that once groups start distributing testers.
+      // Assignments are created only by the createTestingAssignments
+      // callable, which enforces the matching rules.
       allow create: if false;
 
-      // The tester can flip the status to `waitingForVerification` and
-      // update `updatedAt`. Everything else — daysCompleted, coinReward,
-      // completion → completed — is server-authoritative.
-      allow update: if signedIn()
+      // The tester can flip the status to `waitingForVerification` once the
+      // server-maintained day count has actually reached the requirement.
+      // Everything else — daysCompleted, coinReward, the final move to
+      // completed — is server-authoritative.
+      allow update: if activeUser()
         && resource.data.testerId == request.auth.uid
         && onlyChanges(resource.data, request.resource.data, ['status', 'updatedAt'])
         && request.resource.data.status == 'waitingForVerification'
-        && resource.data.status in ['ready', 'inProgress'];
+        && resource.data.status in ['ready', 'inProgress']
+        && resource.data.daysCompleted >= resource.data.daysRequired;
 
       allow delete: if false;
     }
@@ -156,23 +321,51 @@ service cloud.firestore {
     // ---------- testingLogs --------------------------------------------
 
     match /testingLogs/{logId} {
-      // A tester may read their own logs.
-      allow read: if signedIn() && resource.data.testerId == request.auth.uid;
+      // A tester may read their own logs; admins read them for verification.
+      //
+      // `resource == null` covers a read of a log that doesn't exist yet. The
+      // client's check-in transaction reads the day's log document before
+      // writing it, and without this the rule dereferences a null `resource`,
+      // errors, and denies the whole transaction — rejecting every legitimate
+      // check-in.
+      //
+      // Trade-off: because log ids are deterministic, this lets someone who
+      // already knows an assignment id probe whether that day was logged. No
+      // document contents leak. Closing that oracle means moving the check-in
+      // behind a callable function, which is a later change.
+      allow read: if isAdmin()
+        || (signedIn() && (resource == null || resource.data.testerId == request.auth.uid));
 
-      // Duplicate protection has two layers:
+      // Four layers of protection:
       //   1. Deterministic doc ID "{assignmentId}__{yyyy-MM-dd}" makes a
       //      second create for the same day fail at the storage layer.
-      //   2. This rule refuses a create that doesn't match its own ID —
-      //      so a client can't try to smuggle two logs into different
-      //      IDs for the same assignment+day.
-      allow create: if signedIn()
+      //   2. The rule refuses a create whose ID doesn't match its own
+      //      fields, so a client can't smuggle two logs into different IDs.
+      //   3. `date` must equal the day key derived from `request.time` —
+      //      the SERVER clock — so moving the device date forward no longer
+      //      buys extra testing days.
+      //   4. The referenced assignment must exist, belong to this tester,
+      //      and still be active.
+      //
+      // `createdAt` is checked against a tight tolerance window around
+      // `request.time`, not exact equality. Confirmed via the Rules
+      // Playground (real device data, every other clause verified true)
+      // that exact equality between a resolved `serverTimestamp()` sentinel
+      // and `request.time` can fail on sub-second precision — a known
+      // Firestore fragility, which is why Google's own rules cookbook
+      // recommends a tolerance window for this pattern instead of `==`.
+      // A tight window changes nothing about what this guards against: a
+      // client still cannot manufacture an arbitrary `createdAt` — day
+      // boundaries are ~86400s apart, so seconds of slack are not
+      // exploitable for the abuse this check exists to prevent.
+      allow create: if activeUser()
         && request.resource.data.testerId == request.auth.uid
         && onlyHas(request.resource.data, ['assignmentId', 'testerId', 'date', 'createdAt'])
         && logId == request.resource.data.assignmentId + '__' + request.resource.data.date
-        // The referenced assignment must exist and belong to this tester.
-        && exists(/databases/$(database)/documents/testingAssignments/$(request.resource.data.assignmentId))
-        && get(/databases/$(database)/documents/testingAssignments/$(request.resource.data.assignmentId))
-             .data.testerId == request.auth.uid;
+        && request.resource.data.date == serverDayKey()
+        && request.resource.data.createdAt > request.time - duration.value(30, 's')
+        && request.resource.data.createdAt < request.time + duration.value(30, 's')
+        && ownsActiveAssignment(request.resource.data.assignmentId);
 
       // Logs are append-only.
       allow update, delete: if false;

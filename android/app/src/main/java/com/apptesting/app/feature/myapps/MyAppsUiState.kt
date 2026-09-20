@@ -21,4 +21,5 @@ data class MyAppRow(
     val testerCount: Int,
     val completedTesterCount: Int,
     val activeGroupName: String?,
+    val iconUrl: String? = null,
 )

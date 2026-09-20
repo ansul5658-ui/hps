@@ -9,6 +9,7 @@ import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -19,19 +20,12 @@ private const val TAG = "AUTH_DEBUG"
  * Wraps the modern Credential Manager + Google Identity Services flow that
  * returns a Google ID token for the signed-in Google account.
  *
- * We deliberately keep this a plain suspend function: no state, no ViewModel
- * coupling. The caller (an AuthViewModel) hands us an Activity/Fragment
- * context and the Web OAuth client id, and gets back a discriminated result
- * that says whether the user cancelled, has no eligible account, or produced
- * a token that we can hand to FirebaseAuth.
+ * Stage 1 attempts seamless auto-select for previously authorized accounts via
+ * [GetGoogleIdOption] with `filterByAuthorizedAccounts = true`.
  *
- * Diagnostic logging (`adb logcat -s $TAG`) prints one line per step so a
- * hang in either Credential Manager attempt is trivially localizable.
- *
- * A per-attempt [CRED_MAN_TIMEOUT_MS] guarantees that even if Credential
- * Manager gets stuck (a known failure mode when the OAuth Android client
- * for this app's (package, SHA-1) pair isn't registered on the Google
- * Cloud side) the caller sees an Error instead of an infinite spinner.
+ * Stage 2 uses [GetSignInWithGoogleOption] (the official option for explicit button
+ * taps / account picker), avoiding the Google Play Services hang/bug associated with
+ * `GetGoogleIdOption` when `filterByAuthorizedAccounts = false`.
  */
 object GoogleSignInHelper {
 
@@ -58,8 +52,7 @@ object GoogleSignInHelper {
         }
         val credentialManager = CredentialManager.create(context)
 
-        // First attempt: only accounts already authorized on this app —
-        // this makes the sheet less disruptive for returning users.
+        // Attempt 1: Check for previously authorized accounts for seamless returning user sign-in.
         val authorizedRequest = GetCredentialRequest.Builder().addCredentialOption(
             GetGoogleIdOption.Builder()
                 .setServerClientId(webClientId)
@@ -69,21 +62,24 @@ object GoogleSignInHelper {
         ).build()
 
         Log.d(TAG, "attempt 1 — filterByAuthorizedAccounts=true")
-        val first = runRequest(credentialManager, context, authorizedRequest)
+        val first = runRequest(credentialManager, context, authorizedRequest, isFallbackAttempt = false)
         if (first != null) {
             Log.d(TAG, "attempt 1 resolved: ${first::class.simpleName}")
             return first
         }
 
-        Log.d(TAG, "attempt 1 returned no matching credential — retrying with filter=false")
-        val anyRequest = GetCredentialRequest.Builder().addCredentialOption(
-            GetGoogleIdOption.Builder()
-                .setServerClientId(webClientId)
-                .setFilterByAuthorizedAccounts(false)
-                .build(),
+        // Attempt 2: Use GetSignInWithGoogleOption (the official option for button click / account chooser).
+        // This avoids the known Google Play Services hang/bug with GetGoogleIdOption(filterByAuthorizedAccounts=false).
+        Log.d(TAG, "attempt 1 returned no authorized credential — retrying with GetSignInWithGoogleOption")
+        val signInWithGoogleOption = GetSignInWithGoogleOption.Builder(
+            serverClientId = webClientId,
         ).build()
 
-        val second = runRequest(credentialManager, context, anyRequest)
+        val anyRequest = GetCredentialRequest.Builder()
+            .addCredentialOption(signInWithGoogleOption)
+            .build()
+
+        val second = runRequest(credentialManager, context, anyRequest, isFallbackAttempt = true)
         return when {
             second != null -> {
                 Log.d(TAG, "attempt 2 resolved: ${second::class.simpleName}")
@@ -97,18 +93,16 @@ object GoogleSignInHelper {
     }
 
     /**
-     * Returns null when the flow reports "no matching credential" so the
-     * caller can retry with `filterByAuthorizedAccounts = false`.
+     * Executes a Credential Manager request bounded by [CRED_MAN_TIMEOUT_MS].
      *
-     * The Credential Manager call is bounded by [CRED_MAN_TIMEOUT_MS]. That
-     * ceiling accounts for the user picking an account plus the token
-     * round-trip; anything longer means the flow has gotten stuck and we
-     * surface an actionable error rather than block the sign-in coroutine.
+     * If [isFallbackAttempt] is false, non-cancellation errors return null so
+     * that Stage 2 ([GetSignInWithGoogleOption]) is attempted.
      */
     private suspend fun runRequest(
         credentialManager: CredentialManager,
         context: Context,
         request: GetCredentialRequest,
+        isFallbackAttempt: Boolean,
     ): Result? = try {
         val response = withTimeout(CRED_MAN_TIMEOUT_MS) {
             credentialManager.getCredential(context, request)
@@ -128,32 +122,30 @@ object GoogleSignInHelper {
     } catch (e: TimeoutCancellationException) {
         Log.e(TAG, "Credential Manager timed out after ${CRED_MAN_TIMEOUT_MS}ms")
         Result.Error(
-            "Google sign-in timed out. This usually means the OAuth Android " +
-                "client for this app's package + SHA-1 isn't registered on the " +
-                "Google Cloud side. Check Firebase Console → Project settings → " +
-                "Your apps → SHA certificate fingerprints and confirm the debug " +
-                "SHA-1 is registered against the actual applicationId your build " +
-                "runs as.",
+            "Google sign-in timed out. Please verify Google Play Services and network connection on the device.",
         )
     } catch (e: GetCredentialCancellationException) {
         Log.d(TAG, "Credential Manager reported user cancellation")
         Result.Cancelled
     } catch (e: NoCredentialException) {
-        Log.d(TAG, "Credential Manager reported NoCredentialException — retry with filter=false")
+        Log.d(TAG, "Credential Manager reported NoCredentialException")
         null
     } catch (e: GetCredentialException) {
         Log.e(TAG, "GetCredentialException: type=${e.type}", e)
-        Result.Error(e.message ?: "Sign-in failed.")
+        if (!isFallbackAttempt) {
+            Log.d(TAG, "Attempt 1 failed with ${e.type} — falling through to GetSignInWithGoogleOption")
+            null
+        } else {
+            Result.Error(e.message ?: "Sign-in failed.")
+        }
     } catch (t: Throwable) {
         Log.e(TAG, "Unexpected Credential Manager error", t)
-        Result.Error(t.message ?: "Sign-in failed.")
+        if (!isFallbackAttempt) {
+            null
+        } else {
+            Result.Error(t.message ?: "Sign-in failed.")
+        }
     }
 
-    /**
-     * Ceiling on a single Credential Manager attempt. Large enough for the
-     * user to pick an account and for the token to come back (~90s), small
-     * enough that a broken (package, SHA-1) pair surfaces as an error the
-     * user can read instead of an infinite spinner.
-     */
     private const val CRED_MAN_TIMEOUT_MS = 90_000L
 }

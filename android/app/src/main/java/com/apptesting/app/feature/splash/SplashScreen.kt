@@ -1,107 +1,109 @@
 package com.apptesting.app.feature.splash
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Bolt
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.rounded.Science
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.apptesting.app.R
+import androidx.compose.ui.unit.sp
 import com.apptesting.app.core.data.ServiceLocator
+import com.apptesting.app.core.data.UserRepository
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.firstOrNull
 
-/**
- * Bridge screen between the platform splash and the app.
- *
- * Now genuinely checks the current auth state: if a user is already signed
- * in — either through Firebase persistence or the mock demo — we skip
- * straight to Main. Otherwise we hand off to Sign In.
- */
 @Composable
 fun SplashScreen(
     onSignedIn: () -> Unit,
     onNeedsSignIn: () -> Unit,
+    userRepository: UserRepository = ServiceLocator.userRepository,
 ) {
-    var visible by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
-        targetValue = if (visible) 1f else 0.85f,
-        animationSpec = tween(durationMillis = 350),
-        label = "splashLogoScale",
+        targetValue = 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "scale",
+    )
+    var alpha by remember { mutableFloatStateOf(0f) }
+    val animAlpha by animateFloatAsState(
+        targetValue = alpha,
+        animationSpec = tween(600),
+        label = "alpha",
     )
 
     LaunchedEffect(Unit) {
-        visible = true
-        // Hold the splash briefly so the transition feels intentional.
-        delay(350)
-        // Read the current auth state. `first()` on a flow-of-nullables will
-        // suspend until we get the first emission; a stuck backend shouldn't
-        // freeze the launcher, so we bound it and treat timeout as "not
-        // signed in" (the user can retry from SignIn).
-        val user = withTimeoutOrNull(2_000L) {
-            ServiceLocator.userRepository.currentUser.first()
+        delay(100)
+        alpha = 1f
+        delay(2000)
+        val user = userRepository.currentUser.firstOrNull()
+        if (user != null) {
+            onSignedIn()
+        } else {
+            onNeedsSignIn()
         }
-        if (user != null) onSignedIn() else onNeedsSignIn()
     }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background,
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    modifier = Modifier
-                        .size(84.dp)
-                        .scale(scale)
-                        .background(
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            shape = CircleShape,
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier
+                    .size(96.dp)
+                    .scale(scale)
+                    .alpha(animAlpha),
+                shadowElevation = 12.dp,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = Icons.Rounded.Bolt,
+                        imageVector = Icons.Rounded.Science,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(40.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(52.dp),
                     )
                 }
-                Spacer(Modifier.height(20.dp))
-                Text(
-                    text = stringResource(R.string.app_name),
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.onBackground,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = stringResource(R.string.app_tagline),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
+
+            Spacer(Modifier.height(24.dp))
+
+            Text(
+                text = "AppTesting",
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.alpha(animAlpha),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "Developer Testing Community",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.alpha(animAlpha),
+            )
+
+            Spacer(Modifier.height(48.dp))
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .width(120.dp)
+                    .height(3.dp)
+                    .alpha(animAlpha),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.outlineVariant,
+            )
         }
     }
 }

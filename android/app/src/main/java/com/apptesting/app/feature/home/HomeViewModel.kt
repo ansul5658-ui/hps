@@ -1,5 +1,6 @@
 package com.apptesting.app.feature.home
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.apptesting.app.core.data.AppRepository
@@ -26,6 +27,9 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
+
+private const val TAG = "AUTH_DEBUG"
 
 class HomeViewModel(
     private val users: UserRepository,
@@ -35,10 +39,6 @@ class HomeViewModel(
     private val notifications: NotificationRepository,
 ) : ViewModel() {
 
-    // Compose's viewModel() default factory uses reflection on a no-arg
-    // constructor; Kotlin doesn't synthesize one for classes with default
-    // parameters, so declare it explicitly and hand in the ServiceLocator
-    // repositories.
     constructor() : this(
         users = ServiceLocator.userRepository,
         apps = ServiceLocator.appRepository,
@@ -56,23 +56,76 @@ class HomeViewModel(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun observe() {
+        Log.d(TAG, "[HOME] pipeline started")
+        Log.d(TAG, "[FLOW] Home loading started")
         users.currentUser
             .flatMapLatest { user ->
+                Log.d(TAG, "[HOME] currentUser received id=${user?.id}")
+                Log.d(TAG, "[FLOW] HomeViewModel user flatMap = ${user?.id}")
                 if (user == null) {
                     flowOf<HomeUiState>(HomeUiState.Loading)
                 } else {
+                    Log.d(TAG, "[HOME] starting user-dependent data")
+
+                    val myAppsFlow = apps.observeMyApps(user.id)
+                        .onStart { Log.d(TAG, "[HOME] starting apps flow") }
+                        .onEach { Log.d(TAG, "[HOME] apps emitted size=${it.size}") }
+                        .catch { e ->
+                            Log.e(TAG, "[HOME] apps flow FAILED", e)
+                            emit(emptyList())
+                        }
+
+                    val groupsFlow = groups.observeGroups()
+                        .onStart { Log.d(TAG, "[HOME] starting groups flow") }
+                        .onEach { Log.d(TAG, "[HOME] groups emitted size=${it.size}") }
+                        .catch { e ->
+                            Log.e(TAG, "[HOME] groups flow FAILED", e)
+                            emit(emptyList())
+                        }
+
+                    val membershipsFlow = groups.observeMembershipFor(user.id)
+                        .onStart { Log.d(TAG, "[HOME] starting memberships flow") }
+                        .onEach { Log.d(TAG, "[HOME] memberships emitted size=${it.size}") }
+                        .catch { e ->
+                            Log.e(TAG, "[HOME] memberships flow FAILED", e)
+                            emit(emptyList())
+                        }
+
+                    val assignmentsFlow = assignments.observeAssignmentsForUser(user.id)
+                        .onStart { Log.d(TAG, "[HOME] starting tests flow") }
+                        .onEach { Log.d(TAG, "[HOME] tests emitted size=${it.size}") }
+                        .catch { e ->
+                            Log.e(TAG, "[HOME] tests flow FAILED", e)
+                            emit(emptyList())
+                        }
+
+                    val notificationsFlow = notifications.observeUnread(user.id)
+                        .onStart { Log.d(TAG, "[HOME] starting notifications flow") }
+                        .onEach { Log.d(TAG, "[HOME] notifications emitted size=${it.size}") }
+                        .catch { e ->
+                            Log.e(TAG, "[HOME] notifications flow FAILED", e)
+                            emit(emptyList())
+                        }
+
                     combine(
-                        apps.observeMyApps(user.id),
-                        groups.observeGroups(),
-                        groups.observeMembershipFor(user.id),
-                        assignments.observeAssignmentsForUser(user.id),
-                        notifications.observeUnread(user.id),
+                        myAppsFlow,
+                        groupsFlow,
+                        membershipsFlow,
+                        assignmentsFlow,
+                        notificationsFlow,
                     ) { myApps, allGroups, memberships, myAssignments, unread ->
-                        buildContent(user, myApps, allGroups, memberships, myAssignments, unread)
+                        Log.d(TAG, "[HOME] combined data emitted")
+                        Log.d(TAG, "[HOME] mapping HomeUiState")
+                        val content = buildContent(user, myApps, allGroups, memberships, myAssignments, unread)
+                        Log.d(TAG, "[HOME] Home state = Content")
+                        Log.d(TAG, "[FLOW] Home loading finished")
+                        content
                     }
                 }
             }
             .catch { throwable ->
+                Log.e(TAG, "[HOME] pipeline FAILED", throwable)
+                Log.e(TAG, "[FLOW] Home loading error", throwable)
                 emit(HomeUiState.Error(throwable.message ?: "Something went wrong loading your dashboard."))
             }
             .onEach { _state.value = it }
@@ -88,9 +141,6 @@ class HomeViewModel(
         unread: List<Notification>,
     ): HomeUiState {
         val appNameById = myApps.associateBy { it.id }.toMutableMap()
-        // Assignment rows may reference apps not owned by the current user, so
-        // fill the name using the full apps flow when we have it — for now the
-        // ViewModel only holds myApps; we look up via the Home store lazily.
         val activeGroup = allGroups.firstOrNull { g -> memberships.any { it.groupId == g.id } }
         val rows = myAssignments
             .filter { it.status != AssignmentStatus.Completed && it.status != AssignmentStatus.Missed }

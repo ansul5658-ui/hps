@@ -8,10 +8,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.apptesting.app.core.designsystem.theme.BrandColors
 
-/** Compact tinted pill used for assignment / group states. */
 @Composable
 fun StatusPill(
     text: String,
@@ -28,6 +28,7 @@ fun StatusPill(
         Text(
             text = text,
             style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
         )
     }
@@ -42,12 +43,12 @@ enum class StatusTone {
         val dark = cs.background.let { it.red + it.green + it.blue < 1.5f }
         return when (this) {
             Neutral -> cs.surfaceVariant to cs.onSurfaceVariant
-            Info -> cs.primaryContainer to cs.onPrimaryContainer
+            Info    -> cs.primaryContainer to cs.onPrimaryContainer
             Success -> (if (dark) BrandColors.SuccessContainerDark else BrandColors.SuccessContainer) to
-                (if (dark) BrandColors.Teal90 else BrandColors.Success)
+                    (if (dark) BrandColors.Cyan90 else BrandColors.Success)
             Warning -> (if (dark) BrandColors.WarningContainerDark else BrandColors.WarningContainer) to
-                (if (dark) BrandColors.Sand90 else BrandColors.Warning)
-            Danger -> cs.errorContainer to cs.onErrorContainer
+                    (if (dark) BrandColors.Amber90 else BrandColors.Warning)
+            Danger  -> cs.errorContainer to cs.onErrorContainer
         }
     }
 }

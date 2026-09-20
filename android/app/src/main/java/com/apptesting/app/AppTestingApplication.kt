@@ -1,7 +1,10 @@
 package com.apptesting.app
 
 import android.app.Application
+import android.util.Log
 import com.apptesting.app.core.data.ServiceLocator
+
+private const val TAG = "AUTH_DEBUG"
 
 /**
  * Application entry point.
@@ -15,6 +18,7 @@ import com.apptesting.app.core.data.ServiceLocator
 class AppTestingApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "[FLOW] App startup")
         ServiceLocator.init(this)
     }
 }

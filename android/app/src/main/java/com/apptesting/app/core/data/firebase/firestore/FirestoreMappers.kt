@@ -8,9 +8,12 @@ import com.apptesting.app.core.model.CoinTransactionKind
 import com.apptesting.app.core.model.Group
 import com.apptesting.app.core.model.GroupState
 import com.apptesting.app.core.model.GroupVisibility
+import com.apptesting.app.core.model.QuickTestSession
 import com.apptesting.app.core.model.TestAssignment
+import com.apptesting.app.core.util.AppConfig
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FieldValue
 
 /**
  * Manual Firestore field mapping.
@@ -55,8 +58,8 @@ internal fun AppSubmission.toFirestoreCreate(): Map<String, Any?> = mapOf(
     "iconUrl" to iconStoragePath,
     "description" to description,
     "status" to approvalStatus.serialize(),
-    "createdAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
-    "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+    "createdAt" to FieldValue.serverTimestamp(),
+    "updatedAt" to FieldValue.serverTimestamp(),
 )
 
 internal fun DocumentSnapshot.toAppSubmission(): AppSubmission = AppSubmission(
@@ -98,19 +101,31 @@ internal fun parseApprovalStatus(raw: String?): AppApprovalStatus = when (raw) {
 // optional extra fields when present.
 // ---------------------------------------------------------------------------
 
-internal fun DocumentSnapshot.toGroup(): Group = Group(
-    id = id,
-    name = getString("name").orEmpty(),
-    summary = getString("summary").orEmpty(),
-    rules = getString("rules").orEmpty(),
-    visibility = parseGroupVisibility(getString("visibility")),
-    state = parseGroupState(getString("status")),
-    memberCap = getLong("memberCap")?.toInt() ?: 0,
-    currentMemberCount = getLong("memberCount")?.toInt() ?: 0,
-    createdByUserId = getString("createdBy").orEmpty(),
-    createdAtMillis = timestampMillis("createdAt"),
-    googleGroupEmail = getString("googleGroupEmail").orEmpty(),
-)
+internal fun DocumentSnapshot.toGroup(): Group {
+    val rawName = getString("name").orEmpty()
+    val rawEmail = getString("googleGroupEmail").orEmpty()
+
+    val name = if (rawName == "Beta Testers Group" || rawName.isBlank()) "App Testing" else rawName
+    val email = if (rawEmail == "apptesting-beta@googlegroups.com" || rawEmail.isBlank()) {
+        AppConfig.OFFICIAL_GROUP_EMAIL
+    } else {
+        rawEmail
+    }
+
+    return Group(
+        id = if (id == "group_1") AppConfig.OFFICIAL_GROUP_ID else id,
+        name = name,
+        summary = getString("summary").orEmpty().ifBlank { "Official community testing group for all Android apps." },
+        rules = getString("rules").orEmpty().ifBlank { "Participate in community app testing and provide constructive feedback." },
+        visibility = parseGroupVisibility(getString("visibility")),
+        state = parseGroupState(getString("status")),
+        memberCap = getLong("memberCap")?.toInt() ?: 0,
+        currentMemberCount = getLong("memberCount")?.toInt() ?: 1,
+        createdByUserId = getString("createdBy").orEmpty(),
+        createdAtMillis = timestampMillis("createdAt"),
+        googleGroupEmail = email,
+    )
+}
 
 internal fun parseGroupState(raw: String?): GroupState = when (raw) {
     "draft" -> GroupState.Draft
@@ -141,7 +156,7 @@ internal fun parseGroupVisibility(raw: String?): GroupVisibility = when (raw) {
 
 internal fun DocumentSnapshot.toAssignment(
     daysCompleted: Int,
-    lastLoggedLocalDay: String?,
+    lastLoggedDayKey: String?,
 ): TestAssignment = TestAssignment(
     id = id,
     groupId = getString("groupId").orEmpty(), // optional legacy field
@@ -153,7 +168,7 @@ internal fun DocumentSnapshot.toAssignment(
     daysCompleted = daysCompleted,
     status = parseAssignmentStatus(getString("status")),
     coinReward = getLong("coinReward")?.toInt() ?: 0,
-    lastLoggedLocalDay = lastLoggedLocalDay,
+    lastLoggedDayKey = lastLoggedDayKey,
 )
 
 internal fun AssignmentStatus.serialize(): String = when (this) {
@@ -186,6 +201,28 @@ internal fun DocumentSnapshot.toCoinTransaction(userId: String): CoinTransaction
     relatedAssignmentId = getString("relatedAssignmentId"),
     createdAtMillis = timestampMillis("createdAt"),
     recordedByAdmin = getBoolean("recordedByAdmin") ?: false,
+)
+
+// ---------------------------------------------------------------------------
+// QuickTestSession — quickTestSessions/{uid}__{appId}__{yyyy-MM-dd}
+// Written server-side only (startQuickTest / completeQuickTest callables).
+// Client reads its own sessions; security rules refuse every client write.
+//
+// Note the absence of an `assignmentId` mapping: the field does not exist on
+// the document, and mapping one here would be the first step toward treating a
+// Quick Test as commitment progress. It must stay absent.
+// ---------------------------------------------------------------------------
+
+internal fun DocumentSnapshot.toQuickTestSession(): QuickTestSession = QuickTestSession(
+    id = id,
+    userId = getString("uid").orEmpty(),
+    appId = getString("appId").orEmpty(),
+    dayKey = getString("dayKey").orEmpty(),
+    openedAtMillis = timestampMillis("openedAt"),
+    // Null until the session is completed — `timestampMillis` would flatten
+    // that to 0L and lose the distinction between "open" and "completed at
+    // the epoch", so the nullable read is deliberate.
+    completedAtMillis = (get("completedAt") as? Timestamp)?.toDate()?.time,
 )
 
 internal fun parseCoinKind(raw: String?): CoinTransactionKind = when (raw) {

@@ -66,10 +66,10 @@ internal class FirestoreAssignmentRepository(
             aSnap.documents.map { doc ->
                 val logsForThis = logsByAssignment[doc.id].orEmpty()
                 val daysCompleted = logsForThis.size
-                val lastLoggedLocalDay = logsForThis
+                val lastLoggedDayKey = logsForThis
                     .maxByOrNull { it.second }?.first
                     ?.takeIf { it.isNotBlank() }
-                doc.toAssignment(daysCompleted, lastLoggedLocalDay)
+                doc.toAssignment(daysCompleted, lastLoggedDayKey)
             }
         }
     }
@@ -92,10 +92,12 @@ internal class FirestoreAssignmentRepository(
     }
 
     override suspend fun recordDayOfTesting(assignmentId: String): LogDayResult {
+        android.util.Log.d("CHECKIN_DEBUG", "[CHECKIN] recordDayOfTesting called for assignmentId=$assignmentId")
         val uid = auth.currentUser?.uid
             ?: return LogDayResult.Error("Must be signed in to log a testing day.")
         val today = time.todayKey()
         val logDocId = deterministicLogId(assignmentId, today)
+        android.util.Log.d("CHECKIN_DEBUG", "[CHECKIN] uid=$uid today=$today logDocId=$logDocId")
         val logRef = logs.document(logDocId)
         val assignmentRef = assignments.document(assignmentId)
 
@@ -124,8 +126,11 @@ internal class FirestoreAssignmentRepository(
                     ),
                 )
                 TxOutcome.Logged(daysRequired)
-            }.await().toLogDayResult()
+            }.await().also {
+                android.util.Log.d("CHECKIN_DEBUG", "[CHECKIN] transaction outcome=$it")
+            }.toLogDayResult()
         } catch (e: FirebaseFirestoreException) {
+            android.util.Log.e("CHECKIN_DEBUG", "[CHECKIN] FirebaseFirestoreException code=${e.code} message=${e.message}", e)
             // ALREADY_EXISTS surfaces here if two concurrent transactions
             // both saw "no log" and only one committed; treat as idempotent.
             if (e.code == FirebaseFirestoreException.Code.ALREADY_EXISTS ||
@@ -136,6 +141,7 @@ internal class FirestoreAssignmentRepository(
                 LogDayResult.Error(e.message ?: "Failed to log the day.")
             }
         } catch (t: Throwable) {
+            android.util.Log.e("CHECKIN_DEBUG", "[CHECKIN] Throwable class=${t.javaClass.name} message=${t.message}", t)
             LogDayResult.Error(t.message ?: "Failed to log the day.")
         }
     }

@@ -1,5 +1,6 @@
 package com.apptesting.app.core.navigation
 
+import android.util.Log
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -10,22 +11,15 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.apptesting.app.feature.auth.SignInScreen
 import com.apptesting.app.feature.auth.TermsScreen
+import com.apptesting.app.feature.groups.onboarding.GroupOnboardingScreen
 import com.apptesting.app.feature.splash.SplashScreen
+
+private const val TAG = "AUTH_DEBUG"
 
 /**
  * Root nav host. Two top-level graphs live here:
- *   1. Onboarding — Splash → SignIn → Terms.
+ *   1. Onboarding — Splash → SignIn → Terms → GroupOnboarding.
  *   2. Main — a nested graph hosting the bottom-nav tabs (built in MainScaffold).
- *
- * Splash now reads the actual auth state:
- *   * a signed-in user (Firebase persisted session, or the mock demo user)
- *     goes straight to Main;
- *   * a signed-out user goes to SignIn.
- *
- * Sign-in success routes to Terms so first-time users still see the
- * acknowledgement. A returning user who was already signed in on splash
- * skips both SignIn and Terms — an appropriate outcome given they must
- * have accepted before.
  */
 @Composable
 fun AppNavHost() {
@@ -41,21 +35,31 @@ fun AppNavHost() {
     ) {
         onboardingGraph(
             onSignedInAtSplash = {
+                Log.d(TAG, "[FLOW] Navigation from Splash -> Main")
                 navController.navigate(Routes.Main) {
                     popUpTo(Routes.Splash) { inclusive = true }
                 }
             },
             onNeedsSignInAtSplash = {
+                Log.d(TAG, "[FLOW] Navigation from Splash -> SignIn")
                 navController.navigate(Routes.SignIn) {
                     popUpTo(Routes.Splash) { inclusive = true }
                 }
             },
             onSignInSuccess = {
+                Log.d(TAG, "[FLOW] Navigation to Terms")
                 navController.navigate(Routes.Terms) {
                     popUpTo(Routes.SignIn) { inclusive = true }
                 }
             },
             onTermsAccepted = {
+                Log.d(TAG, "[FLOW] Navigation to GroupOnboarding")
+                navController.navigate(Routes.GroupOnboarding) {
+                    popUpTo(Routes.Terms) { inclusive = true }
+                }
+            },
+            onGroupOnboardingCompleted = {
+                Log.d(TAG, "[FLOW] Navigation to Main")
                 navController.navigate(Routes.Main) {
                     popUpTo(Routes.Splash) { inclusive = true }
                 }
@@ -65,6 +69,7 @@ fun AppNavHost() {
         composable(Routes.Main) {
             MainScaffold(
                 onSignOut = {
+                    Log.d(TAG, "[FLOW] Navigation Main -> SignIn (Sign Out)")
                     navController.navigate(Routes.SignIn) {
                         popUpTo(Routes.Main) { inclusive = true }
                     }
@@ -79,6 +84,7 @@ private fun NavGraphBuilder.onboardingGraph(
     onNeedsSignInAtSplash: () -> Unit,
     onSignInSuccess: () -> Unit,
     onTermsAccepted: () -> Unit,
+    onGroupOnboardingCompleted: () -> Unit,
 ) {
     composable(Routes.Splash) {
         SplashScreen(
@@ -88,4 +94,7 @@ private fun NavGraphBuilder.onboardingGraph(
     }
     composable(Routes.SignIn) { SignInScreen(onSignedIn = onSignInSuccess) }
     composable(Routes.Terms) { TermsScreen(onAccepted = onTermsAccepted) }
+    composable(Routes.GroupOnboarding) {
+        GroupOnboardingScreen(onCompleted = onGroupOnboardingCompleted)
+    }
 }

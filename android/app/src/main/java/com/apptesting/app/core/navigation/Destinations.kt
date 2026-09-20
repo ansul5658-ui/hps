@@ -16,15 +16,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import com.apptesting.app.R
 
 /**
- * Top-level nav routes. Keeping them as string constants (rather than typed routes)
- * so this module has zero third-party coupling; typed navigation can be layered on
- * later if we adopt kotlinx-serialization.
+ * Top-level nav routes.
  */
 object Routes {
     // Onboarding stack
     const val Splash = "splash"
     const val SignIn = "signIn"
     const val Terms = "terms"
+    const val GroupOnboarding = "onboarding/group"
 
     // Main app graph
     const val Main = "main"
@@ -36,9 +35,15 @@ object Routes {
     const val Groups = "main/groups"
     const val Profile = "main/profile"
 
-    // Feature detail routes (registered but wired to placeholder screens for now)
+    // Feature detail routes
     const val AddApp = "myApps/add"
+    const val AppDetails = "myApps/details"
     const val Coins = "profile/coins"
+    const val TrustScore = "profile/trustScore"
+    const val TestingHistory = "profile/testingHistory"
+    const val Notifications = "profile/notifications"
+    const val HelpFeedback = "profile/help"
+    const val AdminDashboard = "admin/dashboard"
 
     // Group details — nav arg placeholder is filled by [groupDetailsRoute].
     const val GroupDetailsArg = "groupId"

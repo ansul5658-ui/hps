@@ -10,3 +10,18 @@ local.properties
 google-services.json
 *.jks
 *.keystore
+
+# Node (Cloud Functions + Firestore rule tests)
+node_modules/
+*-debug.log
+
+# Kotlin incremental-compile scratch (errors/, sessions/) — regenerated.
+.kotlin/
+
+# Local debugging debris. Anchored to the project root so a legitimately
+# named source directory deeper in the tree is never swallowed.
+# adb logcat captures and their pid/stderr sidecars; device-logcat3.txt
+# alone is ~50 MB. Manual QA screenshots are re-captured on demand.
+/device-logcat*.txt
+/logcat*-pid.txt
+/screenshots/

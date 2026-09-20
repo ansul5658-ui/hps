@@ -1,5 +1,6 @@
 package com.apptesting.app.feature.myapps.add
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.apptesting.app.core.data.AppRepository
@@ -40,6 +41,7 @@ class AddAppViewModel(
         versionName: String,
         playUrl: String,
         optInUrl: String,
+        selectedIconUri: Uri? = null,
     ) {
         _submitState.value = SubmitState.Submitting
         viewModelScope.launch {
@@ -60,7 +62,7 @@ class AddAppViewModel(
                     optInUrl = optInUrl.trim(),
                     approvalStatus = AppApprovalStatus.PendingReview,
                 )
-                val result = apps.addApp(submission)
+                val result = apps.addApp(submission, selectedIconUri)
                 _submitState.value = if (result.isSuccess) SubmitState.Success
                     else SubmitState.Error(result.exceptionOrNull()?.message ?: "Submission failed.")
             } catch (t: Throwable) {

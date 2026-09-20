@@ -1,5 +1,9 @@
 package com.apptesting.app.feature.myapps.add
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,8 +15,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
@@ -42,25 +48,77 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.apptesting.app.R
 import com.apptesting.app.core.designsystem.component.ResponsivePane
+
+/**
+ * Validation helpers for Add App wizard.
+ */
+object AddAppValidator {
+    private val PACKAGE_NAME_REGEX = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
+
+    fun isValidAppName(name: String): Boolean {
+        val trimmed = name.trim()
+        return trimmed.isNotBlank() && trimmed.length in 1..80
+    }
+
+    fun isValidPackageName(pkg: String): Boolean {
+        val trimmed = pkg.trim()
+        return trimmed.isNotBlank() && PACKAGE_NAME_REGEX.matches(trimmed)
+    }
+
+    fun isValidVersionName(version: String): Boolean {
+        val trimmed = version.trim()
+        return trimmed.isEmpty() || trimmed.length <= 30
+    }
+
+    fun isValidDescription(desc: String): Boolean {
+        val trimmed = desc.trim()
+        return trimmed.isEmpty() || trimmed.length <= 1000
+    }
+
+    fun isValidPlayStoreUrl(urlStr: String): Boolean {
+        val trimmed = urlStr.trim()
+        if (trimmed.isBlank()) return true // Optional field
+        val uri = try { trimmed.toUri() } catch (_: Exception) { return false }
+        val scheme = uri.scheme?.lowercase() ?: return false
+        if (scheme != "http" && scheme != "https") return false
+        val host = uri.host?.lowercase() ?: return false
+        if (host != "play.google.com" && host != "www.play.google.com") return false
+        val path = uri.path ?: return false
+        if (path != "/store/apps/details") return false
+        val appId = uri.getQueryParameter("id")?.trim() ?: return false
+        return isValidPackageName(appId)
+    }
+
+    fun isValidTestingUrl(urlStr: String): Boolean {
+        val trimmed = urlStr.trim()
+        if (trimmed.isBlank()) return false // Required testing link
+        val uri = try { trimmed.toUri() } catch (_: Exception) { return false }
+        val scheme = uri.scheme?.lowercase() ?: return false
+        if (scheme != "http" && scheme != "https") return false
+        val host = uri.host?.lowercase() ?: return false
+        return host.isNotBlank() && host.contains(".")
+    }
+}
 
 /**
  * Multi-step Add App flow.
  *
  * Steps: Info → Play → Icon → Review → Submit.
- * Icon upload UI is present but only records the "picked" flag until Firebase
- * Storage is wired; final Submit currently just pops the back stack.
  */
 @Composable
 fun AddAppScreen(
@@ -72,9 +130,16 @@ fun AddAppScreen(
     var packageName by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
     var versionName by rememberSaveable { mutableStateOf("") }
-    var playUrl by rememberSaveable { mutableStateOf("") }
     var optInUrl by rememberSaveable { mutableStateOf("") }
-    var iconPicked by rememberSaveable { mutableStateOf(false) }
+    var selectedIconUri by rememberSaveable { mutableStateOf<Uri?>(null) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedIconUri = uri
+        }
+    }
 
     val submitState by viewModel.submitState.collectAsStateWithLifecycle()
     val submitting = submitState is AddAppViewModel.SubmitState.Submitting
@@ -112,62 +177,68 @@ fun AddAppScreen(
         },
     ) { inner ->
         ResponsivePane(modifier = Modifier.padding(inner)) {
-        Column(Modifier.fillMaxSize()) {
-            Stepper(steps = steps, current = step)
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Spacer(Modifier.height(4.dp))
-                when (step) {
-                    0 -> StepInfo(
-                        appName = appName, onName = { appName = it },
-                        packageName = packageName, onPackage = { packageName = it },
-                        description = description, onDescription = { description = it },
-                        versionName = versionName, onVersion = { versionName = it },
-                    )
-                    1 -> StepPlay(
-                        playUrl = playUrl, onPlay = { playUrl = it },
-                        optInUrl = optInUrl, onOptIn = { optInUrl = it },
-                    )
-                    2 -> StepIcon(iconPicked = iconPicked, onPick = { iconPicked = true })
-                    3 -> StepReview(
-                        appName = appName,
-                        packageName = packageName,
-                        description = description,
-                        versionName = versionName,
-                        playUrl = playUrl,
-                        optInUrl = optInUrl,
-                        iconPicked = iconPicked,
-                        errorMessage = submitError,
-                    )
-                }
-            }
-            NavBar(
-                step = step,
-                lastStep = steps.lastIndex,
-                canAdvance = canAdvance(step, appName, packageName, playUrl, optInUrl, iconPicked) && !submitting,
-                submitting = submitting,
-                onBack = { if (step == 0) onDone() else step-- },
-                onNext = {
-                    if (step < steps.lastIndex) {
-                        step++
-                    } else {
-                        viewModel.submit(
+            Column(Modifier.fillMaxSize()) {
+                Stepper(steps = steps, current = step)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Spacer(Modifier.height(4.dp))
+                    when (step) {
+                        0 -> StepInfo(
+                            appName = appName, onName = { appName = it },
+                            packageName = packageName, onPackage = { packageName = it },
+                            description = description, onDescription = { description = it },
+                            versionName = versionName, onVersion = { versionName = it },
+                        )
+                        1 -> StepPlay(
+                            optInUrl = optInUrl, onOptIn = { optInUrl = it },
+                        )
+                        2 -> StepIcon(
+                            selectedUri = selectedIconUri,
+                            onPick = {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                                )
+                            },
+                        )
+                        3 -> StepReview(
                             appName = appName,
                             packageName = packageName,
                             description = description,
                             versionName = versionName,
-                            playUrl = playUrl,
                             optInUrl = optInUrl,
+                            selectedIconUri = selectedIconUri,
+                            errorMessage = submitError,
                         )
                     }
-                },
-            )
-        }
+                }
+                NavBar(
+                    step = step,
+                    lastStep = steps.lastIndex,
+                    canAdvance = canAdvance(step, appName, packageName, optInUrl, selectedIconUri) && !submitting,
+                    submitting = submitting,
+                    onBack = { if (step == 0) onDone() else step-- },
+                    onNext = {
+                        if (step < steps.lastIndex) {
+                            step++
+                        } else {
+                            viewModel.submit(
+                                appName = appName,
+                                packageName = packageName,
+                                description = description,
+                                versionName = versionName,
+                                playUrl = "",
+                                optInUrl = optInUrl,
+                                selectedIconUri = selectedIconUri,
+                            )
+                        }
+                    },
+                )
+            }
         }
     }
 }
@@ -225,7 +296,7 @@ private fun Stepper(steps: List<StepMeta>, current: Int) {
                         .height(2.dp)
                         .background(
                             if (index < current) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.surfaceVariant
+                            else MaterialTheme.colorScheme.surfaceVariant,
                         ),
                 )
             }
@@ -246,40 +317,56 @@ private fun StepInfo(
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+
+    val nameError = appName.isNotEmpty() && !AddAppValidator.isValidAppName(appName)
     OutlinedTextField(
         value = appName,
         onValueChange = onName,
         label = { Text("App name") },
         singleLine = true,
+        isError = nameError,
+        supportingText = if (nameError) { { Text("App name must be 1–80 characters.") } } else null,
         modifier = Modifier.fillMaxWidth(),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
     )
+
+    val pkgError = packageName.isNotEmpty() && !AddAppValidator.isValidPackageName(packageName)
     OutlinedTextField(
         value = packageName,
         onValueChange = onPackage,
         label = { Text("Package name") },
         placeholder = { Text("com.example.myapp") },
         singleLine = true,
+        isError = pkgError,
+        supportingText = if (pkgError) { { Text("Enter a valid Android package name (e.g. com.example.app).") } } else null,
         modifier = Modifier.fillMaxWidth(),
         keyboardOptions = KeyboardOptions(
             keyboardType = KeyboardType.Ascii,
             imeAction = ImeAction.Next,
         ),
     )
+
+    val verError = versionName.isNotEmpty() && !AddAppValidator.isValidVersionName(versionName)
     OutlinedTextField(
         value = versionName,
         onValueChange = onVersion,
         label = { Text("Version (optional)") },
         placeholder = { Text("1.0.0 (1)") },
         singleLine = true,
+        isError = verError,
+        supportingText = if (verError) { { Text("Version name must be 30 characters or fewer.") } } else null,
         modifier = Modifier.fillMaxWidth(),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
     )
+
+    val descError = description.isNotEmpty() && !AddAppValidator.isValidDescription(description)
     OutlinedTextField(
         value = description,
         onValueChange = onDescription,
         label = { Text("Description") },
         minLines = 3,
+        isError = descError,
+        supportingText = if (descError) { { Text("Description must be 1000 characters or fewer.") } } else null,
         modifier = Modifier.fillMaxWidth(),
         leadingIcon = { Icon(Icons.Rounded.Description, contentDescription = null) },
     )
@@ -287,32 +374,24 @@ private fun StepInfo(
 
 @Composable
 private fun StepPlay(
-    playUrl: String, onPlay: (String) -> Unit,
     optInUrl: String, onOptIn: (String) -> Unit,
 ) {
-    Text("Google Play information", style = MaterialTheme.typography.titleLarge)
+    Text("Google Play Testing Link", style = MaterialTheme.typography.titleLarge)
     Text(
-        "AppTesting doesn't manage your Play Console. Paste the links you configured there so testers can join.",
+        "Paste the Google Play closed-testing opt-in link so community testers can join.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    OutlinedTextField(
-        value = playUrl,
-        onValueChange = onPlay,
-        label = { Text("Play Store URL") },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-        leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
-        keyboardOptions = KeyboardOptions(
-            keyboardType = KeyboardType.Uri,
-            imeAction = ImeAction.Next,
-        ),
-    )
+
+    val optInError = optInUrl.isNotEmpty() && !AddAppValidator.isValidTestingUrl(optInUrl)
     OutlinedTextField(
         value = optInUrl,
         onValueChange = onOptIn,
-        label = { Text("Closed-testing / opt-in URL") },
+        label = { Text("Closed-testing / Opt-in URL") },
+        placeholder = { Text("https://play.google.com/apps/testing/com.example.app") },
         singleLine = true,
+        isError = optInError,
+        supportingText = if (optInError) { { Text("Enter a valid closed-testing URL.") } } else null,
         modifier = Modifier.fillMaxWidth(),
         leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
         keyboardOptions = KeyboardOptions(
@@ -323,10 +402,10 @@ private fun StepPlay(
 }
 
 @Composable
-private fun StepIcon(iconPicked: Boolean, onPick: () -> Unit) {
+private fun StepIcon(selectedUri: Uri?, onPick: () -> Unit) {
     Text("App icon", style = MaterialTheme.typography.titleLarge)
     Text(
-        "Use a 512x512 PNG. This is shown on the assignment card.",
+        "Use a 512x512 PNG, JPEG, or WebP image. This is shown on the assignment card.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -334,16 +413,32 @@ private fun StepIcon(iconPicked: Boolean, onPick: () -> Unit) {
         onClick = onPick,
         modifier = Modifier
             .fillMaxWidth()
-            .height(120.dp),
+            .height(140.dp),
         shape = MaterialTheme.shapes.large,
     ) {
-        Icon(
-            imageVector = if (iconPicked) Icons.Rounded.CheckCircle else Icons.Rounded.Image,
-            contentDescription = null,
-            modifier = Modifier.size(24.dp),
-        )
-        Spacer(Modifier.size(12.dp))
-        Text(if (iconPicked) "Icon selected — tap to change" else "Choose an image")
+        if (selectedUri != null) {
+            AsyncImage(
+                model = selectedUri,
+                contentDescription = "Selected App Icon",
+                modifier = Modifier
+                    .size(80.dp)
+                    .clip(MaterialTheme.shapes.medium),
+                contentScale = ContentScale.Crop,
+            )
+            Spacer(Modifier.width(16.dp))
+            Column {
+                Text("Icon selected", style = MaterialTheme.typography.titleMedium)
+                Text("Tap to change image", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            Icon(
+                imageVector = Icons.Rounded.Image,
+                contentDescription = null,
+                modifier = Modifier.size(28.dp),
+            )
+            Spacer(Modifier.width(12.dp))
+            Text("Choose an image", style = MaterialTheme.typography.titleMedium)
+        }
     }
 }
 
@@ -353,9 +448,8 @@ private fun StepReview(
     packageName: String,
     description: String,
     versionName: String,
-    playUrl: String,
     optInUrl: String,
-    iconPicked: Boolean,
+    selectedIconUri: Uri?,
     errorMessage: String?,
 ) {
     Text("Review", style = MaterialTheme.typography.titleLarge)
@@ -368,9 +462,8 @@ private fun StepReview(
     ReviewLine("Package", packageName)
     ReviewLine("Version", versionName.ifBlank { "1.0.0 (1)" })
     ReviewLine("Description", description)
-    ReviewLine("Play Store URL", playUrl)
     ReviewLine("Opt-in URL", optInUrl)
-    ReviewLine("Icon", if (iconPicked) "Selected" else "Not selected")
+    ReviewLine("Icon", if (selectedIconUri != null) "Selected" else "Not selected")
     if (errorMessage != null) {
         Spacer(Modifier.size(8.dp))
         Text(
@@ -441,12 +534,11 @@ private fun canAdvance(
     step: Int,
     appName: String,
     packageName: String,
-    playUrl: String,
     optInUrl: String,
-    iconPicked: Boolean,
+    selectedIconUri: Uri?,
 ): Boolean = when (step) {
-    0 -> appName.isNotBlank() && packageName.isNotBlank()
-    1 -> playUrl.isNotBlank() && optInUrl.isNotBlank()
-    2 -> iconPicked
+    0 -> AddAppValidator.isValidAppName(appName) && AddAppValidator.isValidPackageName(packageName)
+    1 -> AddAppValidator.isValidTestingUrl(optInUrl)
+    2 -> selectedIconUri != null
     else -> true
 }

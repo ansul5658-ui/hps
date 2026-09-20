@@ -11,93 +11,90 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-/**
- * Light color scheme — cool white surface, indigo primary. Kept restrained;
- * the accent shows up mainly in primary CTAs and progress accents.
- */
-private val LightScheme = lightColorScheme(
-    primary = BrandColors.Indigo40,
-    onPrimary = Color.White,
-    primaryContainer = BrandColors.Indigo90,
-    onPrimaryContainer = BrandColors.Indigo10,
+private val DarkScheme = darkColorScheme(
+    primary            = BrandColors.Violet60,
+    onPrimary          = Color.White,
+    primaryContainer   = BrandColors.Violet30,
+    onPrimaryContainer = BrandColors.Violet90,
 
-    secondary = BrandColors.Teal40,
-    onSecondary = Color.White,
-    secondaryContainer = BrandColors.Teal90,
-    onSecondaryContainer = BrandColors.Teal10,
+    secondary            = BrandColors.Cyan60,
+    onSecondary          = BrandColors.Cyan10,
+    secondaryContainer   = BrandColors.Cyan30,
+    onSecondaryContainer = BrandColors.Cyan90,
 
-    tertiary = BrandColors.Sand40,
-    onTertiary = Color.White,
-    tertiaryContainer = BrandColors.Sand90,
-    onTertiaryContainer = BrandColors.Sand10,
+    tertiary            = BrandColors.Gold80,
+    onTertiary          = BrandColors.Gold10,
+    tertiaryContainer   = BrandColors.Gold30,
+    onTertiaryContainer = BrandColors.Gold90,
 
-    error = BrandColors.Error40,
-    onError = Color.White,
-    errorContainer = BrandColors.Error90,
-    onErrorContainer = BrandColors.Error10,
+    error            = BrandColors.ErrorLight,
+    onError          = BrandColors.ErrorDark,
+    errorContainer   = BrandColors.ErrorDark,
+    onErrorContainer = BrandColors.ErrorLight,
 
-    background = BrandColors.Neutral98,
-    onBackground = BrandColors.Neutral10,
-    surface = BrandColors.Neutral99,
-    onSurface = BrandColors.Neutral10,
-    surfaceVariant = BrandColors.NeutralVariant90,
-    onSurfaceVariant = BrandColors.NeutralVariant30,
-    surfaceTint = BrandColors.Indigo40,
+    background        = BrandColors.N10,
+    onBackground      = BrandColors.N95,
+    surface           = BrandColors.N12,
+    onSurface         = BrandColors.N95,
+    surfaceVariant    = BrandColors.N20,
+    onSurfaceVariant  = BrandColors.N80,
+    surfaceContainer       = BrandColors.N15,
+    surfaceContainerHigh   = BrandColors.N20,
+    surfaceContainerHighest= BrandColors.N25,
+    surfaceTint       = BrandColors.Violet60,
 
-    outline = BrandColors.NeutralVariant50,
-    outlineVariant = BrandColors.NeutralVariant80,
+    outline        = BrandColors.N40,
+    outlineVariant = BrandColors.N30,
 
-    inverseSurface = BrandColors.Neutral20,
-    inverseOnSurface = BrandColors.Neutral95,
-    inversePrimary = BrandColors.Indigo80,
+    inverseSurface    = BrandColors.N90,
+    inverseOnSurface  = BrandColors.N15,
+    inversePrimary    = BrandColors.Violet40,
 
     scrim = Color.Black,
 )
 
-/**
- * Dark color scheme — deep neutral surface, lighter indigo primary for contrast.
- * Meant to be easy on the eyes; avoids pure black so elevation reads correctly.
- */
-private val DarkScheme = darkColorScheme(
-    primary = BrandColors.Indigo80,
-    onPrimary = BrandColors.Indigo20,
-    primaryContainer = BrandColors.Indigo30,
-    onPrimaryContainer = BrandColors.Indigo90,
+private val LightScheme = lightColorScheme(
+    primary            = BrandColors.Violet40,
+    onPrimary          = Color.White,
+    primaryContainer   = BrandColors.Violet90,
+    onPrimaryContainer = BrandColors.Violet10,
 
-    secondary = BrandColors.Teal80,
-    onSecondary = BrandColors.Teal20,
-    secondaryContainer = BrandColors.Teal30,
-    onSecondaryContainer = BrandColors.Teal90,
+    secondary            = BrandColors.Cyan40,
+    onSecondary          = Color.White,
+    secondaryContainer   = BrandColors.Cyan90,
+    onSecondaryContainer = BrandColors.Cyan10,
 
-    tertiary = BrandColors.Sand80,
-    onTertiary = BrandColors.Sand20,
-    tertiaryContainer = BrandColors.Sand30,
-    onTertiaryContainer = BrandColors.Sand90,
+    tertiary            = BrandColors.Gold40,
+    onTertiary          = Color.White,
+    tertiaryContainer   = BrandColors.Gold90,
+    onTertiaryContainer = BrandColors.Gold10,
 
-    error = BrandColors.Error80,
-    onError = BrandColors.Error20,
-    errorContainer = BrandColors.Error20,
-    onErrorContainer = BrandColors.Error90,
+    error            = BrandColors.ErrorRed,
+    onError          = Color.White,
+    errorContainer   = BrandColors.ErrorLight,
+    onErrorContainer = BrandColors.ErrorDark,
 
-    background = BrandColors.Neutral10,
-    onBackground = BrandColors.Neutral95,
-    surface = BrandColors.Neutral15,
-    onSurface = BrandColors.Neutral95,
-    surfaceVariant = BrandColors.Neutral25,
-    onSurfaceVariant = BrandColors.NeutralVariant80,
-    surfaceTint = BrandColors.Indigo80,
+    background        = BrandColors.N99,
+    onBackground      = BrandColors.N10,
+    surface           = BrandColors.N99,
+    onSurface         = BrandColors.N10,
+    surfaceVariant    = BrandColors.NV90,
+    onSurfaceVariant  = BrandColors.NV30,
+    surfaceContainer       = BrandColors.N98,
+    surfaceContainerHigh   = BrandColors.N95,
+    surfaceContainerHighest= BrandColors.N90,
+    surfaceTint       = BrandColors.Violet40,
 
-    outline = BrandColors.NeutralVariant50,
-    outlineVariant = BrandColors.Neutral30,
+    outline        = BrandColors.NV50,
+    outlineVariant = BrandColors.NV80,
 
-    inverseSurface = BrandColors.Neutral90,
-    inverseOnSurface = BrandColors.Neutral20,
-    inversePrimary = BrandColors.Indigo40,
+    inverseSurface    = BrandColors.N20,
+    inverseOnSurface  = BrandColors.N95,
+    inversePrimary    = BrandColors.Violet80,
 
     scrim = Color.Black,
 )
@@ -105,8 +102,6 @@ private val DarkScheme = darkColorScheme(
 @Composable
 fun AppTestingTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is off by default — the brand palette should read the same
-    // on every device. Callers can opt in per screen if we ever want it.
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
@@ -116,24 +111,24 @@ fun AppTestingTheme(
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
         darkTheme -> DarkScheme
-        else -> LightScheme
+        else      -> LightScheme
     }
 
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            val insets = WindowCompat.getInsetsController(window, view)
-            val useLightIcons = colorScheme.background.luminance() > 0.5f
-            insets.isAppearanceLightStatusBars = useLightIcons
-            insets.isAppearanceLightNavigationBars = useLightIcons
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !darkTheme
+                isAppearanceLightNavigationBars = !darkTheme
+            }
         }
     }
 
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = AppTypography,
-        shapes = AppShapes,
-        content = content,
+        typography  = AppTypography,
+        shapes      = AppShapes,
+        content     = content,
     )
 }

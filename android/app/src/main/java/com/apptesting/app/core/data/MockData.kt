@@ -11,9 +11,11 @@ import com.apptesting.app.core.model.GroupMemberRole
 import com.apptesting.app.core.model.GroupState
 import com.apptesting.app.core.model.GroupVisibility
 import com.apptesting.app.core.model.Notification
+import com.apptesting.app.core.model.QuickTestSession
 import com.apptesting.app.core.model.TestAssignment
 import com.apptesting.app.core.model.User
 import com.apptesting.app.core.model.UserRole
+import com.apptesting.app.core.util.AppConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.UUID
 
@@ -45,17 +47,17 @@ internal class MockStore {
     val groups = MutableStateFlow(
         listOf(
             Group(
-                id = "g_beta",
-                name = "AppTesting Beta Group",
-                summary = "Weekly rotation for early-stage apps in closed testing.",
+                id = AppConfig.OFFICIAL_GROUP_ID,
+                name = "AppTesting Official Group",
+                summary = "Community testing group for all Android apps.",
                 rules = "Test for the full 14-day period. Provide honest feedback.",
                 visibility = GroupVisibility.Open,
                 state = GroupState.Active,
-                memberCap = 40,
+                memberCap = 1000,
                 currentMemberCount = 28,
                 createdByUserId = "u_admin",
                 createdAtMillis = daysAgo(45),
-                googleGroupEmail = "apptesting-beta@googlegroups.com",
+                googleGroupEmail = AppConfig.OFFICIAL_GROUP_EMAIL,
             ),
             Group(
                 id = "g_launch",
@@ -68,33 +70,7 @@ internal class MockStore {
                 currentMemberCount = 12,
                 createdByUserId = "u_admin",
                 createdAtMillis = daysAgo(20),
-                googleGroupEmail = "apptesting-launch@googlegroups.com",
-            ),
-            Group(
-                id = "g_rotation",
-                name = "Weekly Rotation",
-                summary = "Continuous testing pool. New apps added every Monday.",
-                rules = "Complete at least two assignments per rotation.",
-                visibility = GroupVisibility.Open,
-                state = GroupState.Full,
-                memberCap = 30,
-                currentMemberCount = 30,
-                createdByUserId = "u_admin",
-                createdAtMillis = daysAgo(90),
-                googleGroupEmail = "apptesting-rotation@googlegroups.com",
-            ),
-            Group(
-                id = "g_pro",
-                name = "Trusted Testers",
-                summary = "Invite-only group for members with a Trust Score above 90.",
-                rules = "Provide detailed reports. Reserved for experienced testers.",
-                visibility = GroupVisibility.InviteOnly,
-                state = GroupState.Active,
-                memberCap = 15,
-                currentMemberCount = 9,
-                createdByUserId = "u_admin",
-                createdAtMillis = daysAgo(30),
-                googleGroupEmail = "apptesting-trusted@googlegroups.com",
+                googleGroupEmail = AppConfig.OFFICIAL_GROUP_EMAIL,
             ),
         ),
     )
@@ -103,8 +79,8 @@ internal class MockStore {
     val memberships = MutableStateFlow(
         listOf(
             GroupMember(
-                id = "gm_me_beta",
-                groupId = "g_beta",
+                id = "gm_me_official",
+                groupId = AppConfig.OFFICIAL_GROUP_ID,
                 userId = "u_me",
                 joinedAtMillis = daysAgo(30),
                 role = GroupMemberRole.Member,
@@ -128,7 +104,7 @@ internal class MockStore {
                 optInUrl = "https://play.google.com/apps/testing/com.example.taskforge",
                 createdAtMillis = daysAgo(21),
                 approvalStatus = AppApprovalStatus.Approved,
-                activeGroupId = "g_beta",
+                activeGroupId = AppConfig.OFFICIAL_GROUP_ID,
                 testerCount = 12,
                 completedTesterCount = 4,
             ),
@@ -159,7 +135,7 @@ internal class MockStore {
                 optInUrl = "https://play.google.com/apps/testing/com.example.bytereader",
                 createdAtMillis = daysAgo(10),
                 approvalStatus = AppApprovalStatus.Approved,
-                activeGroupId = "g_beta",
+                activeGroupId = AppConfig.OFFICIAL_GROUP_ID,
                 testerCount = 8,
                 completedTesterCount = 3,
             ),
@@ -174,39 +150,9 @@ internal class MockStore {
                 optInUrl = "https://play.google.com/apps/testing/com.example.pixelpacker",
                 createdAtMillis = daysAgo(5),
                 approvalStatus = AppApprovalStatus.Approved,
-                activeGroupId = "g_launch",
+                activeGroupId = AppConfig.OFFICIAL_GROUP_ID,
                 testerCount = 6,
                 completedTesterCount = 1,
-            ),
-            AppSubmission(
-                id = "app_greenloop",
-                ownerUserId = "u_dev_4",
-                name = "GreenLoop",
-                packageName = "com.example.greenloop",
-                description = "Tracks household recycling and shows weekly diversion stats.",
-                versionName = "0.7.3 (7)",
-                playStoreUrl = "https://play.google.com/store/apps/details?id=com.example.greenloop",
-                optInUrl = "https://play.google.com/apps/testing/com.example.greenloop",
-                createdAtMillis = daysAgo(15),
-                approvalStatus = AppApprovalStatus.Approved,
-                activeGroupId = "g_launch",
-                testerCount = 4,
-                completedTesterCount = 0,
-            ),
-            AppSubmission(
-                id = "app_fitpulse",
-                ownerUserId = "u_dev_5",
-                name = "FitPulse",
-                packageName = "com.example.fitpulse",
-                description = "Heart-rate variability trainer with breath-pacing.",
-                versionName = "1.4.1 (17)",
-                playStoreUrl = "https://play.google.com/store/apps/details?id=com.example.fitpulse",
-                optInUrl = "https://play.google.com/apps/testing/com.example.fitpulse",
-                createdAtMillis = daysAgo(3),
-                approvalStatus = AppApprovalStatus.Approved,
-                activeGroupId = "g_rotation",
-                testerCount = 14,
-                completedTesterCount = 5,
             ),
         ),
     )
@@ -216,7 +162,7 @@ internal class MockStore {
         listOf(
             TestAssignment(
                 id = "as_bytereader_me",
-                groupId = "g_beta",
+                groupId = AppConfig.OFFICIAL_GROUP_ID,
                 appId = "app_bytereader",
                 testerUserId = "u_me",
                 assignedAtMillis = daysAgo(7),
@@ -228,7 +174,7 @@ internal class MockStore {
             ),
             TestAssignment(
                 id = "as_pixelpacker_me",
-                groupId = "g_beta",
+                groupId = AppConfig.OFFICIAL_GROUP_ID,
                 appId = "app_pixelpacker",
                 testerUserId = "u_me",
                 assignedAtMillis = daysAgo(2),
@@ -236,42 +182,6 @@ internal class MockStore {
                 daysRequired = 14,
                 daysCompleted = 2,
                 status = AssignmentStatus.InProgress,
-                coinReward = 50,
-            ),
-            TestAssignment(
-                id = "as_greenloop_me",
-                groupId = "g_beta",
-                appId = "app_greenloop",
-                testerUserId = "u_me",
-                assignedAtMillis = daysAgo(0),
-                deadlineAtMillis = daysFromNow(14),
-                daysRequired = 14,
-                daysCompleted = 0,
-                status = AssignmentStatus.Ready,
-                coinReward = 50,
-            ),
-            TestAssignment(
-                id = "as_fitpulse_me",
-                groupId = "g_beta",
-                appId = "app_fitpulse",
-                testerUserId = "u_me",
-                assignedAtMillis = daysAgo(20),
-                deadlineAtMillis = daysAgo(6),
-                daysRequired = 14,
-                daysCompleted = 14,
-                status = AssignmentStatus.Completed,
-                coinReward = 50,
-            ),
-            TestAssignment(
-                id = "as_taskforge_verify",
-                groupId = "g_beta",
-                appId = "app_taskforge",
-                testerUserId = "u_me",
-                assignedAtMillis = daysAgo(16),
-                deadlineAtMillis = daysAgo(2),
-                daysRequired = 14,
-                daysCompleted = 14,
-                status = AssignmentStatus.WaitingForVerification,
                 coinReward = 50,
             ),
         ),
@@ -285,8 +195,8 @@ internal class MockStore {
                 userId = "u_me",
                 amount = 50,
                 kind = CoinTransactionKind.Earn,
-                reason = "Completed FitPulse testing",
-                relatedAssignmentId = "as_fitpulse_me",
+                reason = "Completed ByteReader testing",
+                relatedAssignmentId = "as_bytereader_me",
                 createdAtMillis = daysAgo(6),
             ),
             CoinTransaction(
@@ -297,26 +207,19 @@ internal class MockStore {
                 reason = "First completed assignment bonus",
                 createdAtMillis = daysAgo(28),
             ),
-            CoinTransaction(
-                id = "ct_3",
-                userId = "u_me",
-                amount = 50,
-                kind = CoinTransactionKind.Earn,
-                reason = "Completed ByteReader testing",
-                createdAtMillis = daysAgo(35),
-            ),
-            CoinTransaction(
-                id = "ct_4",
-                userId = "u_me",
-                amount = 100,
-                kind = CoinTransactionKind.Spend,
-                reason = "Requested testers for TaskForge",
-                createdAtMillis = daysAgo(21),
-            ),
         ),
     )
 
     /** Current user's notifications. */
+    /**
+     * Quick Test sessions opened in this mock session.
+     *
+     * Starts empty: a fresh dev session should see a full Quick Test
+     * allowance, and seeding history here would mean some cards render as
+     * already-tested for no reason a developer can see.
+     */
+    val quickTestSessions = MutableStateFlow(emptyList<QuickTestSession>())
+
     val notifications = MutableStateFlow(
         listOf(
             Notification(
@@ -325,13 +228,6 @@ internal class MockStore {
                 title = "TaskForge is under review",
                 body = "An administrator will confirm testing eligibility soon.",
                 createdAtMillis = daysAgo(1),
-            ),
-            Notification(
-                id = "n_2",
-                userId = "u_me",
-                title = "New assignment: GreenLoop",
-                body = "Test this app for 14 days to earn 50 Coins.",
-                createdAtMillis = daysAgo(0),
             ),
         ),
     )

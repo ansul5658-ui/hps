@@ -1,5 +1,8 @@
 package com.apptesting.app.feature.groups
 
+import android.content.Intent
+import android.net.Uri
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,8 +18,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.People
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -26,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,10 +49,14 @@ import com.apptesting.app.core.designsystem.component.ScreenHeader
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.model.GroupState
+import com.apptesting.app.core.util.AppConfig
+
+private const val TAG = "AUTH_DEBUG"
 
 /**
- * Groups list. Each card is tappable and routes to Group Details, which
- * is where the Join / Leave actions live. The list itself is read-only.
+ * Groups list. Each card displays group details and a "Join Google Group"
+ * action button that launches [AppConfig.APP_TESTER_GOOGLE_GROUP_URL]
+ * in an external browser.
  */
 @Composable
 fun GroupsScreen(
@@ -53,11 +64,13 @@ fun GroupsScreen(
     viewModel: GroupsViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    Log.d(TAG, "[GROUPS_DEBUG] GroupsScreen composed state=${state::class.simpleName}")
 
     ScreenContainer {
         ScreenHeader(
             title = stringResource(R.string.nav_groups),
-            subtitle = "Join a testing group and start testing apps.",
+            subtitle = "Join our official Google Group to participate in community app testing.",
         )
         Spacer(Modifier.height(16.dp))
         when (val s = state) {
@@ -67,6 +80,7 @@ fun GroupsScreen(
                 message = s.message,
             )
             is GroupsUiState.Content -> {
+                Log.d(TAG, "[GROUPS_DEBUG] GroupsScreen Content loaded with ${s.rows.size} group rows")
                 if (s.rows.isEmpty()) {
                     EmptyState(
                         icon = Icons.Rounded.Groups,
@@ -80,7 +94,19 @@ fun GroupsScreen(
                         contentPadding = PaddingValues(bottom = 24.dp),
                     ) {
                         items(s.rows, key = { it.id }) { row ->
-                            GroupCard(row = row, onClick = { onGroupClick(row.id) })
+                            GroupCard(
+                                row = row,
+                                onClick = { onGroupClick(row.id) },
+                                onJoinGroupClick = {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppConfig.APP_TESTER_GOOGLE_GROUP_URL))
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {
+                                        // Safely handle missing browser without crashing
+                                    }
+                                    onGroupClick(row.id)
+                                },
+                            )
                         }
                     }
                 }
@@ -93,12 +119,16 @@ fun GroupsScreen(
 private fun GroupCard(
     row: GroupRow,
     onClick: () -> Unit,
+    onJoinGroupClick: () -> Unit,
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(
-                onClick = onClick,
+                onClick = {
+                    Log.d(TAG, "[GROUPS_DEBUG] GroupCard clicked: id=${row.id}, name=${row.name}")
+                    onClick()
+                },
                 role = Role.Button,
                 onClickLabel = "Open ${row.name}",
             ),
@@ -146,6 +176,26 @@ private fun GroupCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onJoinGroupClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp),
+                shape = MaterialTheme.shapes.medium,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Join Google Group")
             }
         }
     }

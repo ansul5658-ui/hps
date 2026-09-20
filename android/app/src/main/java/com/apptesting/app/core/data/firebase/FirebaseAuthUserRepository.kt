@@ -6,9 +6,11 @@ import com.apptesting.app.core.data.AuthGateway
 import com.apptesting.app.core.data.UserRepository
 import com.apptesting.app.core.model.User
 import com.apptesting.app.core.model.UserRole
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
@@ -17,9 +19,13 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 
@@ -28,21 +34,11 @@ private const val TAG = "AUTH_DEBUG"
 /**
  * Real Firebase-backed [UserRepository] + [AuthGateway].
  *
- * The `currentUser` flow now merges two sources so the domain [User]
+ * The `currentUser` flow merges two sources so the domain [User]
  * carries server-authoritative fields alongside auth identity:
  *   * [FirebaseAuth] auth-state — identity, email, photo, uid
  *   * `users/{uid}` Firestore document — role, coinBalance, trustScore,
  *     createdAt, updatedAt
- *
- * Firestore write path is restricted to the fields the client is
- * permitted to set per Phase 3 Step 2 rules: uid, email, displayName,
- * photoUrl, createdAt (create-only), updatedAt. Server-authoritative
- * fields (role, coinBalance, trustScore, isSuspended) are never sent
- * from the client.
- *
- * Diagnostic logging + per-call timeouts around the FirebaseAuth and
- * Firestore round trips ensure that even a hung backend surfaces as an
- * actionable error in the UI rather than an infinite Loading spinner.
  */
 internal class FirebaseAuthUserRepository(
     private val appContext: Context,
@@ -52,27 +48,40 @@ internal class FirebaseAuthUserRepository(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     override val currentUser: Flow<User?> = authStateFlow()
+        .distinctUntilChangedBy { it?.uid }
         .flatMapLatest { fbUser ->
+            Log.d(TAG, "[FLOW] Auth state changed uid=${fbUser?.uid}")
             if (fbUser == null) {
                 flowOf(null)
             } else {
                 val identity = fbUser.toIdentity()
                 firestore.collection("users").document(fbUser.uid)
                     .snapshots()
-                    .let { docFlow ->
-                        combine(flowOf(identity), docFlow) { id, doc ->
-                            id.copy(
-                                role = parseRole(doc.getString("role")),
-                                coinBalance = doc.getLong("coinBalance")?.toInt() ?: 0,
-                                trustScore = doc.getLong("trustScore")?.toInt() ?: 0,
-                                createdAtMillis = doc.get("createdAt")?.let {
-                                    (it as? com.google.firebase.Timestamp)?.toDate()?.time
-                                } ?: id.createdAtMillis,
-                                isSuspended = doc.getBoolean("isSuspended") ?: false,
-                            )
-                        }
+                    .map<DocumentSnapshot, User> { doc ->
+                        val rawRole = doc.getString("role")
+                        val parsedRole = parseRole(rawRole)
+                        Log.d("ADMIN_DEBUG", "Current UID: ${auth.currentUser?.uid}")
+                        Log.d("ADMIN_DEBUG", "Raw role in Firestore: '$rawRole'")
+                        Log.d("ADMIN_DEBUG", "Parsed role: $parsedRole")
+                        identity.copy(
+                            role = parsedRole,
+                            coinBalance = doc.getLong("coinBalance")?.toInt() ?: 0,
+                            trustScore = doc.getLong("trustScore")?.toInt() ?: 0,
+                            createdAtMillis = doc.get("createdAt")?.let {
+                                (it as? Timestamp)?.toDate()?.time
+                            } ?: identity.createdAtMillis,
+                            isSuspended = doc.getBoolean("isSuspended") ?: false,
+                        )
+                    }
+                    .onStart { emit(identity) }
+                    .catch { e ->
+                        Log.e(TAG, "[FLOW] Error observing users/${fbUser.uid} document in currentUser flow", e)
+                        emit(identity)
                     }
             }
+        }
+        .onEach { user ->
+            Log.d(TAG, "[FLOW] currentUser emitted id=${user?.id} displayName=${user?.displayName}")
         }
 
     private fun authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
@@ -83,7 +92,7 @@ internal class FirebaseAuthUserRepository(
     }
 
     override suspend fun signOut() {
-        Log.d(TAG, "FirebaseAuth.signOut()")
+        Log.d(TAG, "[AUTH] FirebaseAuth.signOut()")
         auth.signOut()
     }
 
@@ -93,40 +102,58 @@ internal class FirebaseAuthUserRepository(
     override fun webClientId(): String? = FirebaseAvailability.webClientId(appContext)
 
     override suspend fun signInWithGoogleIdToken(idToken: String): Result<Unit> = runCatching {
-        Log.d(TAG, "FirebaseAuth.signInWithCredential — starting")
+        Log.d(TAG, "[AUTH] Firebase signInWithCredential started")
         val credential = GoogleAuthProvider.getCredential(idToken, null)
         val user = withTimeout(AUTH_STEP_TIMEOUT_MS) {
             auth.signInWithCredential(credential).await().user
         } ?: error("FirebaseAuth returned no user after sign-in.")
-        Log.d(TAG, "FirebaseAuth.signInWithCredential — completed uid=${user.uid}")
+
+        val uid = user.uid
+        Log.d(TAG, "[AUTH] Firebase signInWithCredential successful")
+        Log.d(TAG, "[AUTH] Firebase UID = $uid")
+
         upsertProfile(user)
-        Log.d(TAG, "auth flow finished successfully")
     }
 
     // ---- Firestore profile upsert -------------------------------------
     private suspend fun upsertProfile(user: FirebaseUser) {
-        // Client-writable fields only. Rules reject writes to role,
-        // coinBalance, trustScore, isSuspended — those are set by
-        // Cloud Functions later.
+        val uid = user.uid
+        val ref = firestore.collection("users").document(uid)
+
+        Log.d(TAG, "[AUTH] Firestore user profile write started")
+        Log.d(TAG, "[AUTH] Firestore path = users/$uid")
+        Log.d(TAG, "[AUTH] Firestore operation = SET/MERGE")
+        Log.d(TAG, "[AUTH] FirebaseAuth currentUser UID = ${auth.currentUser?.uid}")
+
         val profile = mutableMapOf<String, Any?>(
-            "uid" to user.uid,
+            "uid" to uid,
             "displayName" to (user.displayName ?: ""),
             "email" to (user.email ?: ""),
             "photoUrl" to (user.photoUrl?.toString() ?: ""),
             "updatedAt" to FieldValue.serverTimestamp(),
         )
-        val ref = firestore.collection("users").document(user.uid)
-        Log.d(TAG, "Firestore users/${user.uid}.get() — starting")
-        val snapshot = withTimeout(FIRESTORE_STEP_TIMEOUT_MS) { ref.get().await() }
-        Log.d(TAG, "Firestore users/${user.uid}.get() — exists=${snapshot.exists()}")
-        if (!snapshot.exists()) {
+
+        // Include createdAt on brand new accounts without requiring a preliminary Firestore GET
+        val creationTime = user.metadata?.creationTimestamp ?: 0L
+        val isNewAccount = creationTime > 0 && (System.currentTimeMillis() - creationTime) < 120_000L
+        if (isNewAccount) {
             profile["createdAt"] = FieldValue.serverTimestamp()
         }
-        Log.d(TAG, "Firestore users/${user.uid}.set(merge) — starting")
-        withTimeout(FIRESTORE_STEP_TIMEOUT_MS) {
-            ref.set(profile, SetOptions.merge()).await()
+
+        try {
+            withTimeout(FIRESTORE_STEP_TIMEOUT_MS) {
+                ref.set(profile, SetOptions.merge()).await()
+            }
+            Log.d(TAG, "[AUTH] Firestore user profile write successful")
+        } catch (e: Exception) {
+            Log.e(TAG, "[AUTH] Firestore operation FAILED", e)
+            Log.e(TAG, "[AUTH] Exception class: ${e.javaClass.name}")
+            Log.e(TAG, "[AUTH] Exception message: ${e.message}")
+            Log.e(TAG, "[AUTH] FirebaseAuth.currentUser: ${auth.currentUser}")
+            Log.e(TAG, "[AUTH] FirebaseAuth.currentUser?.uid: ${auth.currentUser?.uid}")
+            Log.e(TAG, "[AUTH] Firestore path being accessed: users/$uid")
+            throw e
         }
-        Log.d(TAG, "Firestore users/${user.uid}.set(merge) — completed")
     }
 
     private fun FirebaseUser.toIdentity(): User = User(
@@ -144,9 +171,6 @@ internal class FirebaseAuthUserRepository(
     }
 
     private companion object {
-        // Ceilings on the individual Firebase network calls. Sum is well
-        // under AuthViewModel.FIREBASE_TIMEOUT_MS so the outer timeout
-        // remains the last-resort guard.
         const val AUTH_STEP_TIMEOUT_MS = 20_000L
         const val FIRESTORE_STEP_TIMEOUT_MS = 15_000L
     }

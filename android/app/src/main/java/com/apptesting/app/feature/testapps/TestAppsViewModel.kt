@@ -1,16 +1,23 @@
 package com.apptesting.app.feature.testapps
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.apptesting.app.core.data.AppRepository
 import com.apptesting.app.core.data.AssignmentRepository
 import com.apptesting.app.core.data.LogDayResult
+import com.apptesting.app.core.data.NotificationRepository
+import com.apptesting.app.core.data.QuickTestRepository
 import com.apptesting.app.core.data.ServiceLocator
+import com.apptesting.app.core.data.StartQuickTestResult
 import com.apptesting.app.core.data.UserRepository
 import com.apptesting.app.core.model.AppApprovalStatus
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.QuickTestAllowance
 import com.apptesting.app.core.model.TestAssignment
+import com.apptesting.app.core.model.User
+import com.apptesting.app.core.util.AppConfig
 import com.apptesting.app.core.util.TimeProvider
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,10 +34,14 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
+private const val TAG = "AUTH_DEBUG"
+
 class TestAppsViewModel(
     private val users: UserRepository,
     private val apps: AppRepository,
     private val assignments: AssignmentRepository,
+    private val quickTests: QuickTestRepository,
+    private val notifications: NotificationRepository,
     private val time: TimeProvider,
 ) : ViewModel() {
 
@@ -38,6 +49,8 @@ class TestAppsViewModel(
         users = ServiceLocator.userRepository,
         apps = ServiceLocator.appRepository,
         assignments = ServiceLocator.assignmentRepository,
+        quickTests = ServiceLocator.quickTestRepository,
+        notifications = ServiceLocator.notificationRepository,
         time = TimeProvider.Default,
     )
 
@@ -56,13 +69,36 @@ class TestAppsViewModel(
         filter.value = newFilter
     }
 
+    /**
+     * Start a Quick Test.
+     *
+     * Nothing is written locally and no optimistic state is applied: the
+     * server owns the daily limit, the cooldown and the session itself, so the
+     * UI simply reflects what comes back. The listener on the allowance
+     * re-emits the new count on its own.
+     */
+    fun onStartQuickTest(appId: String) {
+        viewModelScope.launch {
+            when (val result = quickTests.startQuickTest(appId)) {
+                is StartQuickTestResult.Started ->
+                    _events.emit(
+                        TestAppsEvent.QuickTestStarted(appId, result.remainingToday),
+                    )
+                StartQuickTestResult.AlreadyToday ->
+                    _events.emit(
+                        TestAppsEvent.Message("You've already Quick Tested this app today."),
+                    )
+                is StartQuickTestResult.Error ->
+                    _events.emit(TestAppsEvent.Message(result.message))
+            }
+        }
+    }
+
     fun onCheckIn(assignmentId: String) {
         viewModelScope.launch {
             when (val result = assignments.recordDayOfTesting(assignmentId)) {
-                is LogDayResult.Logged -> Unit // the flow already re-emits with the incremented row
+                is LogDayResult.Logged -> Unit
                 LogDayResult.AlreadyLoggedToday ->
-                    // A tap that beat a stale UI to the punch. The button will disable itself
-                    // once the flow re-emits, but a snackbar makes the reason explicit.
                     _events.emit(TestAppsEvent.Message("You've already logged today for this app."))
                 is LogDayResult.Error ->
                     _events.emit(TestAppsEvent.Message(result.message))
@@ -78,13 +114,37 @@ class TestAppsViewModel(
     private fun observe() {
         users.currentUser
             .flatMapLatest { user ->
-                if (user == null) flowOf<TestAppsUiState>(TestAppsUiState.Loading)
-                else combine(
-                    apps.observeAvailableApps(excludeOwnerId = user.id),
-                    assignments.observeAssignmentsForUser(user.id),
-                    filter,
-                ) { available, myAssignments, currentFilter ->
-                    build(available, myAssignments, currentFilter)
+                if (user == null) {
+                    flowOf<TestAppsUiState>(TestAppsUiState.Loading)
+                } else {
+                    // Every one of these is a read of server-owned state. A
+                    // failure in any single stream degrades that section to
+                    // empty rather than taking the whole screen down — a
+                    // missing discovery pool must not hide the assignments.
+                    combine(
+                        apps.observeAvailableApps(excludeOwnerId = user.id)
+                            .catch { e -> Log.e(TAG, "[TEST_APPS] observeAvailableApps failed", e); emit(emptyList()) },
+                        assignments.observeAssignmentsForUser(user.id)
+                            .catch { e -> Log.e(TAG, "[TEST_APPS] observeAssignmentsForUser failed", e); emit(emptyList()) },
+                        quickTests.observePoolAppIds()
+                            .catch { e -> Log.e(TAG, "[TEST_APPS] observePoolAppIds failed", e); emit(emptyList()) },
+                        quickTests.observeAllowance(user.id)
+                            .catch { e -> Log.e(TAG, "[TEST_APPS] observeAllowance failed", e); emit(emptyAllowance()) },
+                        notifications.observeUnread(user.id)
+                            .catch { e -> Log.e(TAG, "[TEST_APPS] observeUnread failed", e); emit(emptyList()) },
+                        filter,
+                    ) { values ->
+                        @Suppress("UNCHECKED_CAST")
+                        build(
+                            user = user,
+                            availableApps = values[0] as List<AppSubmission>,
+                            myAssignments = values[1] as List<TestAssignment>,
+                            poolAppIds = values[2] as List<String>,
+                            allowance = values[3] as QuickTestAllowance,
+                            unreadCount = (values[4] as List<*>).size,
+                            currentFilter = values[5] as TestFilter,
+                        )
+                    }
                 }
             }
             .catch { emit(TestAppsUiState.Error(it.message ?: "Failed to load testing apps.")) }
@@ -92,13 +152,40 @@ class TestAppsViewModel(
             .launchIn(viewModelScope)
     }
 
+    private fun emptyAllowance() = QuickTestAllowance(
+        dayKey = time.todayKey(),
+        usedToday = 0,
+        dailyLimit = AppConfig.QUICK_TEST_DAILY_LIMIT,
+    )
+
     private fun build(
+        user: User,
         availableApps: List<AppSubmission>,
         myAssignments: List<TestAssignment>,
+        poolAppIds: List<String>,
+        allowance: QuickTestAllowance,
+        unreadCount: Int,
         currentFilter: TestFilter,
     ): TestAppsUiState.Content {
-        val assignmentByAppId = myAssignments.associateBy { it.appId }
         val today = time.todayKey()
+
+        // Section 1 — Quick Tests. Pure, and unit tested in
+        // QuickTestSelectionTest; this is presentation filtering only, and the
+        // server re-checks every rule on the actual call.
+        val quickTestCards = QuickTestSelection.select(
+            poolAppIds = poolAppIds,
+            apps = availableApps,
+            currentUserId = user.id,
+            allowance = allowance,
+            todayKey = today,
+            cooldownDays = AppConfig.QUICK_TEST_COOLDOWN_DAYS,
+            limit = AppConfig.QUICK_TEST_MIN_VISIBLE,
+        )
+
+        // Section 2 — structured commitments. Unchanged behaviour: testers are
+        // still matched server-side, and this batch deliberately does NOT add
+        // joining or coin locking.
+        val assignmentByAppId = myAssignments.associateBy { it.appId }
         val rows = availableApps
             .filter { it.approvalStatus == AppApprovalStatus.Approved }
             .map { app ->
@@ -109,11 +196,10 @@ class TestAppsViewModel(
                     appName = app.name,
                     packageName = app.packageName,
                     developerLabel = shortenOwner(app.ownerUserId),
-                    coinReward = a?.coinReward ?: DEFAULT_REWARD,
                     daysRequired = a?.daysRequired ?: DEFAULT_DAYS,
                     daysCompleted = a?.daysCompleted ?: 0,
                     status = a?.status,
-                    loggedToday = a?.lastLoggedLocalDay == today,
+                    loggedToday = a?.lastLoggedDayKey == today,
                 )
             }
         val visibleRows = when (currentFilter) {
@@ -125,7 +211,16 @@ class TestAppsViewModel(
             }
             TestFilter.Available -> rows.filter { it.status == null }
         }
-        return TestAppsUiState.Content(currentFilter, visibleRows)
+
+        return TestAppsUiState.Content(
+            filter = currentFilter,
+            quickTests = quickTestCards,
+            quickTestsRemainingToday = allowance.remainingToday,
+            quickTestDailyLimit = allowance.dailyLimit,
+            rows = visibleRows,
+            coinBalance = user.coinBalance,
+            unreadNotifications = unreadCount,
+        )
     }
 
     private fun shortenOwner(id: String): String = when (id) {
@@ -134,11 +229,18 @@ class TestAppsViewModel(
     }
 
     private companion object {
-        const val DEFAULT_REWARD = 50
         const val DEFAULT_DAYS = 14
     }
 }
 
 sealed interface TestAppsEvent {
     data class Message(val text: String) : TestAppsEvent
+
+    /**
+     * A Quick Test session was opened server-side.
+     *
+     * Carries the app id so the screen can send the user to the app, and the
+     * server's own remaining count so the confirmation never guesses.
+     */
+    data class QuickTestStarted(val appId: String, val remainingToday: Int) : TestAppsEvent
 }

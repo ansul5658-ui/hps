@@ -3,10 +3,12 @@ package com.apptesting.app.core.data
 import android.content.Context
 import com.apptesting.app.core.data.firebase.FirebaseAuthUserRepository
 import com.apptesting.app.core.data.firebase.FirebaseAvailability
+import com.apptesting.app.core.data.firebase.firestore.FirestoreAdminRepository
 import com.apptesting.app.core.data.firebase.firestore.FirestoreAppRepository
 import com.apptesting.app.core.data.firebase.firestore.FirestoreAssignmentRepository
 import com.apptesting.app.core.data.firebase.firestore.FirestoreCoinRepository
 import com.apptesting.app.core.data.firebase.firestore.FirestoreGroupRepository
+import com.apptesting.app.core.data.firebase.firestore.FirestoreQuickTestRepository
 
 /**
  * Very small service locator for repositories.
@@ -49,7 +51,9 @@ object ServiceLocator {
     private val mockGroups by lazy { MockGroupRepository(store) }
     private val mockAssignments by lazy { MockAssignmentRepository(store) }
     private val mockCoins by lazy { MockCoinRepository(store) }
+    private val mockQuickTests by lazy { MockQuickTestRepository(store) }
     private val mockNotifications by lazy { MockNotificationRepository(store) }
+    private val mockAdmin by lazy { MockAdminRepository(store) }
 
     // ---- Public repositories ---------------------------------------------
     val userRepository: UserRepository by lazy {
@@ -67,8 +71,14 @@ object ServiceLocator {
     val coinRepository: CoinRepository by lazy {
         if (isFirebaseEnabled) FirestoreCoinRepository() else mockCoins
     }
+    val quickTestRepository: QuickTestRepository by lazy {
+        if (isFirebaseEnabled) FirestoreQuickTestRepository() else mockQuickTests
+    }
     val notificationRepository: NotificationRepository by lazy {
         // FCM + notifications inbox lands in Step 6.
         mockNotifications
+    }
+    val adminRepository: AdminRepository by lazy {
+        if (isFirebaseEnabled) FirestoreAdminRepository() else mockAdmin
     }
 }

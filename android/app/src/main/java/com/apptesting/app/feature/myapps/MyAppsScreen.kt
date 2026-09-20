@@ -1,12 +1,10 @@
 package com.apptesting.app.feature.myapps
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -27,13 +25,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.apptesting.app.R
 import com.apptesting.app.core.designsystem.component.AppIconAvatar
 import com.apptesting.app.core.designsystem.component.EmptyState
@@ -48,6 +53,7 @@ import com.apptesting.app.core.model.AppApprovalStatus
 @Composable
 fun MyAppsScreen(
     onAddApp: () -> Unit,
+    onAppClick: (String) -> Unit = {},
     viewModel: MyAppsViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -75,7 +81,9 @@ fun MyAppsScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(bottom = 24.dp),
                     ) {
-                        items(s.rows, key = { it.id }) { row -> MyAppCard(row) }
+                        items(s.rows, key = { it.id }) { row ->
+                            MyAppCard(row = row, onClick = { onAppClick(row.id) })
+                        }
                     }
                 }
             }
@@ -107,8 +115,9 @@ private fun Header(onAddApp: () -> Unit) {
 }
 
 @Composable
-private fun MyAppCard(row: MyAppRow) {
+private fun MyAppCard(row: MyAppRow, onClick: () -> Unit) {
     Card(
+        onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -116,7 +125,20 @@ private fun MyAppCard(row: MyAppRow) {
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AppIconAvatar(seed = row.id, label = row.name, size = 52.dp)
+                var imageError by remember { mutableStateOf(false) }
+                if (!row.iconUrl.isNullOrBlank() && !imageError) {
+                    AsyncImage(
+                        model = row.iconUrl,
+                        contentDescription = row.name,
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(MaterialTheme.shapes.medium),
+                        contentScale = ContentScale.Crop,
+                        onError = { imageError = true },
+                    )
+                } else {
+                    AppIconAvatar(seed = row.id, label = row.name, size = 52.dp)
+                }
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -139,7 +161,6 @@ private fun MyAppCard(row: MyAppRow) {
                 StatusPill(text = label, tone = tone)
             }
             Spacer(Modifier.height(14.dp))
-            // Testers on line 1, group on line 2 — keeps both readable at narrow widths.
             MetaLine(icon = Icons.Rounded.People, text = "${row.testerCount} testers · ${row.completedTesterCount} completed")
             Spacer(Modifier.height(4.dp))
             MetaLine(icon = Icons.Rounded.Group, text = row.activeGroupName ?: "Not in a group yet")
@@ -148,7 +169,7 @@ private fun MyAppCard(row: MyAppRow) {
 }
 
 @Composable
-private fun MetaLine(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
+private fun MetaLine(icon: ImageVector, text: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             imageVector = icon,

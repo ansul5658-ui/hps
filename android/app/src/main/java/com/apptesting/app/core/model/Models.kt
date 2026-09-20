@@ -104,7 +104,7 @@ data class TestAssignment(
     val assignedAtMillis: Long = 0L,
     val deadlineAtMillis: Long? = null,
     val daysRequired: Int = 14,
-    /** server-authoritative — driven by tester actions + admin verification */
+    /** server-authoritative — recomputed from `testingLogs` by a Cloud Function */
     val daysCompleted: Int = 0,
     /** server-authoritative — driven by tester actions + admin verification */
     val status: AssignmentStatus = AssignmentStatus.Ready,
@@ -112,12 +112,14 @@ data class TestAssignment(
     val coinReward: Int = 0,
     /**
      * Last day the tester logged testing progress, formatted as `yyyy-MM-dd`
-     * in the tester's local timezone. Used to enforce the "one log per
-     * calendar day per assignment" rule idempotently: a repeated tap on the
-     * same day is a no-op. Written by the server (or, in tests, the mock
-     * repository); never mutated by the client via a copy() call.
+     * in UTC — the one definition of "today" that the client and Firestore
+     * rules can both compute (see
+     * [com.apptesting.app.core.util.TimeProvider]). Used to enforce the "one
+     * log per calendar day per assignment" rule idempotently: a repeated tap
+     * on the same day is a no-op. Derived from the `testingLogs` collection;
+     * never mutated by the client via a copy() call.
      */
-    val lastLoggedLocalDay: String? = null,
+    val lastLoggedDayKey: String? = null,
 ) {
     /** Convenience — derived from days rather than a duplicate percentage field. */
     val progressPercent: Int
@@ -145,6 +147,55 @@ data class CoinTransaction(
 )
 
 enum class CoinTransactionKind { Earn, Spend, Bonus, Penalty, Adjustment }
+
+/**
+ * One lightweight Quick Test session.
+ *
+ * Quick Tests sit entirely outside the Testing Coin commitment economy: zero
+ * coins in, zero coins out, no [TestAssignment], no testing log, no effect on
+ * commitment progress.
+ *
+ * SECURITY NOTE
+ * There is deliberately no `assignmentId` here, and there is none on the
+ * Firestore document either. That absence is what makes it impossible for a
+ * Quick Test to be mistaken for, or converted into, a qualifying testing day.
+ * Do not add one.
+ *
+ * Every field is server-authoritative: sessions are created and completed only
+ * by the `startQuickTest` / `completeQuickTest` callables, and security rules
+ * refuse every client write to the collection.
+ */
+data class QuickTestSession(
+    val id: String = "",
+    /** server-authoritative */
+    val userId: String = "",
+    /** server-authoritative */
+    val appId: String = "",
+    /** server-authoritative — UTC `yyyy-MM-dd`, part of the deterministic id */
+    val dayKey: String = "",
+    /** server-authoritative */
+    val openedAtMillis: Long = 0L,
+    /** server-authoritative — null until the session is completed */
+    val completedAtMillis: Long? = null,
+)
+
+/**
+ * What the client knows about its own Quick Test allowance.
+ *
+ * Used only to render counts and to disable a button before a round trip. The
+ * server re-derives all of it on every call, so a tampered value here changes
+ * a label, never an outcome.
+ */
+data class QuickTestAllowance(
+    val dayKey: String = "",
+    val usedToday: Int = 0,
+    val dailyLimit: Int = 0,
+    /** appId → the `yyyy-MM-dd` of that app's most recent session. */
+    val lastSessionDayByAppId: Map<String, String> = emptyMap(),
+) {
+    val remainingToday: Int get() = (dailyLimit - usedToday).coerceAtLeast(0)
+    val hasQuotaLeft: Boolean get() = remainingToday > 0
+}
 
 /** A notification for a user — assignments, admin messages, etc. */
 data class Notification(

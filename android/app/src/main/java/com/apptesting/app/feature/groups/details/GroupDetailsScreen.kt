@@ -1,5 +1,8 @@
 package com.apptesting.app.feature.groups.details
 
+import android.content.Intent
+import android.net.Uri
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,7 +23,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Email
-import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.People
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -50,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,7 +69,10 @@ import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.model.Group
 import com.apptesting.app.core.model.GroupState
+import com.apptesting.app.core.util.AppConfig
 import kotlinx.coroutines.launch
+
+private const val TAG = "AUTH_DEBUG"
 
 /**
  * Group Details screen — Scaffold with a back-arrow TopAppBar. Body:
@@ -80,10 +86,9 @@ fun GroupDetailsScreen(
     groupId: String,
     onBack: () -> Unit,
 ) {
-    // Explicit factory — GroupDetailsViewModel takes groupId in its ctor,
-    // so we can't use the default no-arg reflection path here. Key on
-    // groupId so navigating between two group details entries doesn't
-    // share state.
+    Log.d(TAG, "[GROUPS_DEBUG] GroupDetailsScreen composed for groupId=$groupId")
+
+    val context = LocalContext.current
     val viewModel: GroupDetailsViewModel = viewModel(
         key = "GroupDetailsViewModel/$groupId",
         factory = viewModelFactory {
@@ -167,11 +172,17 @@ fun GroupDetailsScreen(
 
     if (showJoinDialog) {
         ConfirmDialog(
-            title = "Join group?",
-            message = "You'll become a member of this testing group.",
-            confirmLabel = "Join Group",
+            title = "Join Google Group?",
+            message = "This will open the official AppTesting Google Group in your browser so you can join.",
+            confirmLabel = "Open Google Group",
             onConfirm = {
                 showJoinDialog = false
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppConfig.APP_TESTER_GOOGLE_GROUP_URL))
+                    context.startActivity(intent)
+                } catch (_: Exception) {
+                    scope.launch { snackbar.showSnackbar("No browser app found to open link.") }
+                }
                 viewModel.join()
             },
             onDismiss = { showJoinDialog = false },
