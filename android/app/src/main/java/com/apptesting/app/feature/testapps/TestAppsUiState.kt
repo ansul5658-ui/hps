@@ -2,6 +2,7 @@ package com.apptesting.app.feature.testapps
 
 import androidx.compose.runtime.Immutable
 import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.CoinWallet
 
 sealed interface TestAppsUiState {
     object Loading : TestAppsUiState
@@ -17,13 +18,13 @@ sealed interface TestAppsUiState {
         /** Section 2 — structured multi-day commitments. */
         val rows: List<TestRow>,
         /**
-         * Read-only balance from `users/{uid}.coinBalance`.
+         * Read-only Testing Coin wallet, from `users/{uid}/wallet/balance`.
          *
-         * The new Available/Locked/Forfeited wallet is a later batch, so this
-         * is displayed as a plain total and nothing is claimed about what is
-         * locked or spendable.
+         * The chip shows [CoinWallet.available] — what the user could actually
+         * commit to a new test. Showing a combined total here would overstate
+         * what is spendable the moment anything is locked.
          */
-        val coinBalance: Int,
+        val wallet: CoinWallet,
         val unreadNotifications: Int,
     ) : TestAppsUiState {
         val hasQuickTestQuota: Boolean get() = quickTestsRemainingToday > 0

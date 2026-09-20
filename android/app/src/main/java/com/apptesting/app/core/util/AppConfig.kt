@@ -32,6 +32,24 @@ object AppConfig {
      */
     const val REQUIRED_TESTER_COUNT = 20
 
+    // ---- Testing Coins ---------------------------------------------------
+    // Mirrors the commitment constants in functions/lib/constants.js. Display
+    // only: the amount actually staked comes from the assignment document,
+    // which no client can write, and the server re-derives every limit on each
+    // call. A tampered value here changes a label, not an outcome.
+
+    /**
+     * Coins a tester commits to one assignment.
+     *
+     * A COMMITMENT, not a reward: completing returns the same coins, failing
+     * forfeits them. Never render this as "+50" or as an amount earned.
+     */
+    const val DEFAULT_COMMITMENT_AMOUNT = 50
+
+    /** Firestore path of the server-maintained wallet document. */
+    const val WALLET_SUBCOLLECTION = "wallet"
+    const val WALLET_DOC_ID = "balance"
+
     // ---- Quick Tests -----------------------------------------------------
     // Mirrors the QUICK_TEST_* constants in functions/lib/constants.js. These
     // are duplicated deliberately: the client uses them only to render and to

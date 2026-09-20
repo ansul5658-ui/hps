@@ -51,6 +51,7 @@ import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
 import com.apptesting.app.core.designsystem.component.ResponsivePane
 import com.apptesting.app.core.model.CoinTransactionKind
+import com.apptesting.app.core.model.CoinWallet
 
 @Composable
 fun ProfileScreen(
@@ -110,11 +111,7 @@ private fun ProfileContent(
         ) {
             ProfileHeader(state.displayName, state.email, state.joinedIso)
             Spacer(Modifier.height(20.dp))
-            CoinBalanceCard(
-                balance = state.coinBalance,
-                totalEarned = state.totalCoinsEarned,
-                onClick = onNavigateToCoins,
-            )
+            TestingCoinCard(wallet = state.wallet, onClick = onNavigateToCoins)
             Spacer(Modifier.height(20.dp))
             StatsRow(
                 appsSubmitted = state.appsSubmitted,
@@ -133,7 +130,7 @@ private fun ProfileContent(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Recent Coin activity",
+                    text = "Recent Testing Coin activity",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
@@ -149,14 +146,14 @@ private fun ProfileContent(
                         .clickable(
                             onClick = onNavigateToCoins,
                             role = Role.Button,
-                            onClickLabel = "View coin wallet",
+                            onClickLabel = "View Testing Coin wallet",
                         ),
                     shape = MaterialTheme.shapes.large,
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 ) {
                     Text(
-                        text = "No coin transactions yet. Tap to view wallet.",
+                        text = "No Testing Coin activity yet. Tap to view wallet.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(20.dp),
@@ -169,7 +166,7 @@ private fun ProfileContent(
                         .clickable(
                             onClick = onNavigateToCoins,
                             role = Role.Button,
-                            onClickLabel = "View coin wallet",
+                            onClickLabel = "View Testing Coin wallet",
                         ),
                     shape = MaterialTheme.shapes.large,
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -196,7 +193,7 @@ private fun ProfileContent(
                 if (state.isAdmin) {
                     add(RowEntry(Icons.Rounded.AdminPanelSettings, "Admin Dashboard", "Manage users, apps, and platform testing", onNavigateToAdmin))
                 }
-                add(RowEntry(Icons.Rounded.Savings, "Coin wallet", "Balance, earnings and history", onNavigateToCoins))
+                add(RowEntry(Icons.Rounded.Savings, "Testing Coins", "Balance, commitments and history", onNavigateToCoins))
                 add(RowEntry(Icons.Rounded.Shield, "Trust score", "How your score is calculated", onNavigateToTrustScore))
                 add(RowEntry(Icons.Rounded.History, "Testing history", "All assignments you've completed", onNavigateToTestingHistory))
                 add(RowEntry(Icons.Rounded.Notifications, "Notifications", "Alerts for assignments and reviews", onNavigateToNotifications))
@@ -262,15 +259,23 @@ private fun ProfileHeader(name: String, email: String, joinedIso: String) {
     }
 }
 
+/**
+ * The Testing Coin summary card.
+ *
+ * Shows AVAILABLE as the headline number, with locked called out underneath
+ * when there is a live commitment. It deliberately does not show a lifetime
+ * total: nothing is earned under the commitment model, so "earned all-time"
+ * described a product that no longer exists.
+ */
 @Composable
-private fun CoinBalanceCard(balance: Int, totalEarned: Int, onClick: () -> Unit) {
+private fun TestingCoinCard(wallet: CoinWallet, onClick: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(
                 onClick = onClick,
                 role = Role.Button,
-                onClickLabel = "Open coin wallet",
+                onClickLabel = "Open Testing Coin wallet",
             ),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
@@ -300,16 +305,20 @@ private fun CoinBalanceCard(balance: Int, totalEarned: Int, onClick: () -> Unit)
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = "Coin balance",
+                    text = "Testing Coins",
                     style = MaterialTheme.typography.labelLarge,
                 )
                 Text(
-                    text = balance.toString(),
+                    text = wallet.available.toString(),
                     style = MaterialTheme.typography.headlineLarge,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "$totalEarned earned all-time",
+                    text = if (wallet.locked > 0) {
+                        "${wallet.locked} committed to active tests"
+                    } else {
+                        "Available to commit"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -400,16 +409,9 @@ private fun TransactionRow(tx: ProfileTransactionRow) {
             )
         }
         Spacer(Modifier.width(12.dp))
-        val (signPrefix, tint) = when (tx.kind) {
-            CoinTransactionKind.Earn, CoinTransactionKind.Bonus ->
-                "+" to MaterialTheme.colorScheme.tertiary
-            CoinTransactionKind.Spend, CoinTransactionKind.Penalty ->
-                "-" to MaterialTheme.colorScheme.error
-            CoinTransactionKind.Adjustment ->
-                "" to MaterialTheme.colorScheme.onSurface
-        }
+        val (signPrefix, tint) = coinRowStyle(tx.kind, tx.isLegacy)
         Text(
-            text = "$signPrefix${tx.amount} Coins",
+            text = "$signPrefix${tx.amount}",
             style = MaterialTheme.typography.titleMedium,
             color = tint,
             maxLines = 1,

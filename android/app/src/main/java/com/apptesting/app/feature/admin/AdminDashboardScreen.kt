@@ -371,7 +371,12 @@ private fun UsersTab(users: List<User>, viewModel: AdminDashboardViewModel) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
                                 overflow = TextOverflow.Ellipsis)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 3.dp)) {
-                                Text("💰 ${user.coinBalance}", style = MaterialTheme.typography.labelSmall,
+                                // Reward-era `users/{uid}.coinBalance`, labelled
+                                // as legacy so the console does not present it
+                                // as the Testing Coin wallet. The real wallet
+                                // lives at users/{uid}/wallet/balance and is
+                                // read per user, which this roster does not do.
+                                Text("legacy ${user.coinBalance}", style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text("🛡 ${user.trustScore}", style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -571,9 +576,11 @@ private fun AssignmentsTab(assignments: List<TestAssignment>) {
                             Text("${item.daysCompleted}/${item.daysRequired} days",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("+${item.coinReward} coins",
+                            // The stake, not a payout. Verifying this
+                            // assignment moves no coins at all.
+                            Text("${item.commitmentAmount} committed",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.tertiary)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }

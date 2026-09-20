@@ -5,6 +5,8 @@ import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.CoinTransaction
 import com.apptesting.app.core.model.CoinTransactionKind
+import com.apptesting.app.core.model.CoinTransactionSource
+import com.apptesting.app.core.model.CoinWallet
 import com.apptesting.app.core.model.Group
 import com.apptesting.app.core.model.GroupMember
 import com.apptesting.app.core.model.GroupMemberRole
@@ -37,6 +39,9 @@ internal class MockStore {
             email = "developer@example.com",
             createdAtMillis = daysAgo(60),
             termsAcceptedAtMillis = daysAgo(60),
+            // Reward-era field. Kept so the legacy-data path stays exercised
+            // in dev mode; nothing user-facing reads it any more — the Testing
+            // Coin balance comes from [wallet] below.
             coinBalance = 240,
             trustScore = 72,
             role = UserRole.Member,
@@ -170,7 +175,7 @@ internal class MockStore {
                 daysRequired = 14,
                 daysCompleted = 7,
                 status = AssignmentStatus.InProgress,
-                coinReward = 50,
+                commitmentAmount = 50,
             ),
             TestAssignment(
                 id = "as_pixelpacker_me",
@@ -182,30 +187,84 @@ internal class MockStore {
                 daysRequired = 14,
                 daysCompleted = 2,
                 status = AssignmentStatus.InProgress,
-                coinReward = 50,
+                commitmentAmount = 50,
             ),
         ),
     )
 
-    /** Coin ledger for the current user. */
+    /**
+     * The mock Testing Coin wallet.
+     *
+     * Deliberately consistent with [transactions] below, and deliberately
+     * consistent with itself: 50 available + 100 locked + 0 forfeited equals
+     * 0 purchased + 150 adjustment, which is the invariant the server
+     * maintains. A mock that violated it would let the UI be developed against
+     * a state the backend can never produce.
+     *
+     * 100 is locked because the two seeded assignments are live commitments of
+     * 50 each. Nothing here was "earned": the only coins that entered came
+     * from an admin play-money grant.
+     */
+    val wallet = MutableStateFlow(
+        CoinWallet(
+            available = 50,
+            locked = 100,
+            forfeitedTotal = 0,
+            purchasedTotal = 0,
+            adjustmentNet = 150,
+            ledgerCount = 3,
+            lastEntryId = "ct_lock_pixelpacker",
+            updatedAtMillis = daysAgo(2),
+            exists = true,
+        ),
+    )
+
+    /**
+     * Coin ledger for the current user, newest last.
+     *
+     * These are commitment-model (v2) entries: a play-money grant, then two
+     * stakes. There is no "earn" entry and no completion bonus, because the
+     * product has neither.
+     */
     val transactions = MutableStateFlow(
         listOf(
             CoinTransaction(
-                id = "ct_1",
+                id = "ct_grant",
                 userId = "u_me",
-                amount = 50,
-                kind = CoinTransactionKind.Earn,
-                reason = "Completed ByteReader testing",
-                relatedAssignmentId = "as_bytereader_me",
-                createdAtMillis = daysAgo(6),
+                amount = 150,
+                kind = CoinTransactionKind.Adjustment,
+                source = CoinTransactionSource.AdminGrant,
+                deltaAvailable = 150,
+                reason = "Play-money grant (pre-payment pilot)",
+                createdAtMillis = daysAgo(28),
+                actorId = "u_admin",
+                schemaVersion = 2,
             ),
             CoinTransaction(
-                id = "ct_2",
+                id = "ct_lock_bytereader",
                 userId = "u_me",
-                amount = 30,
-                kind = CoinTransactionKind.Bonus,
-                reason = "First completed assignment bonus",
-                createdAtMillis = daysAgo(28),
+                amount = 50,
+                kind = CoinTransactionKind.Lock,
+                source = CoinTransactionSource.Commitment,
+                deltaAvailable = -50,
+                deltaLocked = 50,
+                reason = "Committed to testing ByteReader",
+                relatedAssignmentId = "as_bytereader_me",
+                createdAtMillis = daysAgo(7),
+                schemaVersion = 2,
+            ),
+            CoinTransaction(
+                id = "ct_lock_pixelpacker",
+                userId = "u_me",
+                amount = 50,
+                kind = CoinTransactionKind.Lock,
+                source = CoinTransactionSource.Commitment,
+                deltaAvailable = -50,
+                deltaLocked = 50,
+                reason = "Committed to testing PixelPacker",
+                relatedAssignmentId = "as_pixelpacker_me",
+                createdAtMillis = daysAgo(2),
+                schemaVersion = 2,
             ),
         ),
     )

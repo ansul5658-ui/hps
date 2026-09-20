@@ -5,6 +5,7 @@ import com.apptesting.app.core.model.AppApprovalStatus
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.CoinTransaction
+import com.apptesting.app.core.model.CoinWallet
 import com.apptesting.app.core.model.Group
 import com.apptesting.app.core.model.GroupMember
 import com.apptesting.app.core.model.Notification
@@ -163,11 +164,29 @@ internal class MockAssignmentRepository(private val store: MockStore) : Assignme
     }
 }
 
+/**
+ * In-memory [CoinRepository] for dev mode (no google-services.json).
+ *
+ * Read-only, exactly like the Firestore implementation. There is no mock
+ * "grant myself coins" path on purpose: the mock exists so screens can be
+ * developed without Firebase, and a mutating method here would let a UI be
+ * built against an operation the real client is structurally incapable of.
+ */
 internal class MockCoinRepository(private val store: MockStore) : CoinRepository {
+    override fun observeWallet(userId: String): Flow<CoinWallet> =
+        store.wallet
+            // A user the mock does not know about has never transacted.
+            .map { wallet -> if (userId == MOCK_USER_ID) wallet else CoinWallet.EMPTY }
+            .onStart { delay(LOAD_DELAY_MS) }
+
     override fun observeTransactions(userId: String): Flow<List<CoinTransaction>> =
         store.transactions
             .map { list -> list.filter { it.userId == userId }.sortedByDescending { it.createdAtMillis } }
             .onStart { delay(LOAD_DELAY_MS) }
+
+    private companion object {
+        const val MOCK_USER_ID = "u_me"
+    }
 }
 
 /**

@@ -20,6 +20,10 @@ rules_version = '2';
 //   * `testingLogs` uses deterministic doc IDs ("{aid}__{yyyy-MM-dd}") AND a
 //     server-derived day key, so neither a repeat call nor a tampered device
 //     clock can manufacture extra testing days.
+//   * The Testing Coin wallet and its ledger are READ-ONLY to every client,
+//     including admins. Balances move only inside Cloud Function
+//     transactions, which derive the balance deltas from the entry kind
+//     rather than accepting them from a caller.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -144,7 +148,32 @@ service cloud.firestore {
 
       allow delete: if false;
 
-      // Per-user append-only coin ledger. Only Cloud Functions write.
+      // ---- Testing Coin wallet ---------------------------------------
+      //
+      // Testing Coins are a COMMITMENT device: coins are staked on an
+      // assignment, the same coins come back on success, and they are
+      // forfeited on failure. They are not cash, are not withdrawable and
+      // are not transferable between users.
+      //
+      // The cached balance document. Every field on it — available, locked,
+      // forfeitedTotal, purchasedTotal, adjustmentNet — is server-derived
+      // from the ledger below, and NONE of them is client-writable. A client
+      // that could write any one of them could grant itself coins, unlock
+      // its own stake, or erase a forfeit, which is the whole security model
+      // of the wallet. `write` covers create, update and delete deliberately:
+      // deleting this document would reset the balance just as effectively
+      // as editing it.
+      match /wallet/{walletDocId} {
+        allow read: if isSelf(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      // Per-user append-only coin ledger — the source of truth the wallet
+      // above is folded from. Only Cloud Functions write, and they use
+      // `tx.create` with deterministic ids, so even server code cannot
+      // overwrite an existing entry. Client writes are refused outright: an
+      // update or delete here would rewrite financial history, and a create
+      // would let a client mint its own balance change.
       match /coinTransactions/{txId} {
         allow read: if isSelf(userId) || isAdmin();
         allow write: if false;

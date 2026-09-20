@@ -83,8 +83,8 @@ fun TermsScreen(onAccepted: () -> Unit) {
                     body = "The information you provide about your own apps — package name, Play Store URL, closed-testing opt-in link — is shared with community members who test them.",
                 )
                 TermBullet(
-                    title = "Coins and Trust Score",
-                    body = "Coins and Trust Score are managed on the server. Client-side changes are never trusted. Administrators can adjust them per platform rules.",
+                    title = "Testing Coins and Trust Score",
+                    body = "Testing Coins are a commitment you stake on a test, not money. They cannot be withdrawn or transferred, completing a test returns the same coins, and failing one forfeits them. Balances and Trust Score are managed on the server; client-side changes are never trusted.",
                 )
                 TermBullet(
                     title = "Google Play",

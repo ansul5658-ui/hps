@@ -28,7 +28,7 @@
     <string name="home_greeting_evening">Good evening</string>
     <string name="home_greeting_night">Working late</string>
     <string name="home_notifications">Notifications</string>
-    <string name="home_coin_balance">Coin balance</string>
+    <string name="home_coin_balance">Testing Coins</string>
     <string name="home_trust_score">Trust Score</string>
     <string name="home_today_progress">Today\'s testing</string>
     <string name="home_assignments_remaining">Assignments remaining</string>

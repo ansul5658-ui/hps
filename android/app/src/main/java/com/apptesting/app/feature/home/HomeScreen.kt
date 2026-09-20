@@ -107,8 +107,8 @@ private fun HomeContent(
             ) {
                 StatCard(
                     icon = Icons.Rounded.Savings,
-                    label = "Coins",
-                    value = state.coinBalance.toString(),
+                    label = "Testing Coins",
+                    value = state.wallet.available.toString(),
                     accent = MaterialTheme.colorScheme.tertiary,
                     accentContainer = MaterialTheme.colorScheme.tertiaryContainer,
                     modifier = Modifier.weight(1f),
@@ -222,7 +222,7 @@ private fun HomeContent(
                     daysCompleted = row.daysCompleted,
                     daysRequired = row.daysRequired,
                     progress = row.progress,
-                    coinReward = row.coinReward,
+                    commitmentAmount = row.commitmentAmount,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp)
@@ -268,7 +268,7 @@ private fun AssignmentCard(
     daysCompleted: Int,
     daysRequired: Int,
     progress: Float,
-    coinReward: Int,
+    commitmentAmount: Int,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -316,10 +316,14 @@ private fun AssignmentCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // The stake, not a reward. Completing this assignment returns
+                // these coins; it does not add any. The old copy here read
+                // "+N coins on completion", which promised earnings the
+                // commitment product does not give.
                 Text(
-                    "+$coinReward coins on completion",
+                    if (commitmentAmount > 0) "$commitmentAmount committed" else "",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

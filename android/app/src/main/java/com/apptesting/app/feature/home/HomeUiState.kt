@@ -2,6 +2,7 @@ package com.apptesting.app.feature.home
 
 import androidx.compose.runtime.Immutable
 import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.CoinWallet
 
 /**
  * View state for the Home dashboard.
@@ -14,7 +15,8 @@ sealed interface HomeUiState {
     @Immutable
     data class Content(
         val displayName: String,
-        val coinBalance: Int,
+        /** Server-maintained Testing Coin wallet. Read-only. */
+        val wallet: CoinWallet,
         val trustScore: Int,
         val appsSubmitted: Int,
         val appsInReview: Int,
@@ -35,7 +37,14 @@ data class HomeAssignmentRow(
     val status: AssignmentStatus,
     val daysCompleted: Int,
     val daysRequired: Int,
-    val coinReward: Int,
+    /**
+     * Testing Coins STAKED on this assignment.
+     *
+     * Not a payout. The Home card deliberately does not render this as
+     * "+N on completion" — completing returns the same coins, so that copy
+     * described a reward the product does not give.
+     */
+    val commitmentAmount: Int,
 ) {
     val progress: Float
         get() = if (daysRequired <= 0) 0f else daysCompleted.toFloat() / daysRequired

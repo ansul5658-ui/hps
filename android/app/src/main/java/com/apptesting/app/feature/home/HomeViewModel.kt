@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.apptesting.app.core.data.AppRepository
 import com.apptesting.app.core.data.AssignmentRepository
+import com.apptesting.app.core.data.CoinRepository
 import com.apptesting.app.core.data.GroupRepository
 import com.apptesting.app.core.data.NotificationRepository
 import com.apptesting.app.core.data.ServiceLocator
@@ -12,6 +13,7 @@ import com.apptesting.app.core.data.UserRepository
 import com.apptesting.app.core.model.AppApprovalStatus
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.CoinWallet
 import com.apptesting.app.core.model.Group
 import com.apptesting.app.core.model.GroupMember
 import com.apptesting.app.core.model.Notification
@@ -37,6 +39,7 @@ class HomeViewModel(
     private val groups: GroupRepository,
     private val assignments: AssignmentRepository,
     private val notifications: NotificationRepository,
+    private val coins: CoinRepository,
 ) : ViewModel() {
 
     constructor() : this(
@@ -45,6 +48,7 @@ class HomeViewModel(
         groups = ServiceLocator.groupRepository,
         assignments = ServiceLocator.assignmentRepository,
         notifications = ServiceLocator.notificationRepository,
+        coins = ServiceLocator.coinRepository,
     )
 
     private val _state = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
@@ -107,16 +111,38 @@ class HomeViewModel(
                             emit(emptyList())
                         }
 
+                    val walletFlow = coins.observeWallet(user.id)
+                        .onStart { Log.d(TAG, "[HOME] starting wallet flow") }
+                        .onEach { Log.d(TAG, "[HOME] wallet emitted available=${it.available}") }
+                        .catch { e ->
+                            Log.e(TAG, "[HOME] wallet flow FAILED", e)
+                            emit(CoinWallet.EMPTY)
+                        }
+
+                    // Six sources, so this is the vararg `combine` that hands
+                    // back an Array rather than named parameters — the same
+                    // form TestAppsViewModel uses. The indices below must stay
+                    // in step with the order above.
                     combine(
                         myAppsFlow,
                         groupsFlow,
                         membershipsFlow,
                         assignmentsFlow,
                         notificationsFlow,
-                    ) { myApps, allGroups, memberships, myAssignments, unread ->
+                        walletFlow,
+                    ) { values ->
                         Log.d(TAG, "[HOME] combined data emitted")
                         Log.d(TAG, "[HOME] mapping HomeUiState")
-                        val content = buildContent(user, myApps, allGroups, memberships, myAssignments, unread)
+                        @Suppress("UNCHECKED_CAST")
+                        val content = buildContent(
+                            user = user,
+                            myApps = values[0] as List<AppSubmission>,
+                            allGroups = values[1] as List<Group>,
+                            memberships = values[2] as List<GroupMember>,
+                            myAssignments = values[3] as List<TestAssignment>,
+                            unread = values[4] as List<Notification>,
+                            wallet = values[5] as CoinWallet,
+                        )
                         Log.d(TAG, "[HOME] Home state = Content")
                         Log.d(TAG, "[FLOW] Home loading finished")
                         content
@@ -139,6 +165,7 @@ class HomeViewModel(
         memberships: List<GroupMember>,
         myAssignments: List<TestAssignment>,
         unread: List<Notification>,
+        wallet: CoinWallet,
     ): HomeUiState {
         val appNameById = myApps.associateBy { it.id }.toMutableMap()
         val activeGroup = allGroups.firstOrNull { g -> memberships.any { it.groupId == g.id } }
@@ -154,12 +181,12 @@ class HomeViewModel(
                     status = a.status,
                     daysCompleted = a.daysCompleted,
                     daysRequired = a.daysRequired,
-                    coinReward = a.coinReward,
+                    commitmentAmount = a.commitmentAmount,
                 )
             }
         return HomeUiState.Content(
             displayName = user.displayName.ifBlank { "Developer" },
-            coinBalance = user.coinBalance,
+            wallet = wallet,
             trustScore = user.trustScore,
             appsSubmitted = myApps.size,
             appsInReview = myApps.count { it.approvalStatus == AppApprovalStatus.PendingReview },

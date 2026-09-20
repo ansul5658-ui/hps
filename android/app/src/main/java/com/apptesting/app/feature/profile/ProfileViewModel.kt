@@ -11,7 +11,7 @@ import com.apptesting.app.core.data.UserRepository
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.CoinTransaction
-import com.apptesting.app.core.model.CoinTransactionKind
+import com.apptesting.app.core.model.CoinWallet
 import com.apptesting.app.core.model.TestAssignment
 import com.apptesting.app.core.model.User
 import com.apptesting.app.core.model.UserRole
@@ -69,8 +69,9 @@ class ProfileViewModel(
                         apps.observeMyApps(user.id).catch { e -> Log.e(TAG, "[PROFILE] observeMyApps failed", e); emit(emptyList()) },
                         assignments.observeAssignmentsForUser(user.id).catch { e -> Log.e(TAG, "[PROFILE] observeAssignmentsForUser failed", e); emit(emptyList()) },
                         coins.observeTransactions(user.id).catch { e -> Log.e(TAG, "[PROFILE] observeTransactions failed", e); emit(emptyList()) },
-                    ) { myApps, myAssignments, transactions ->
-                        build(user, myApps, myAssignments, transactions)
+                        coins.observeWallet(user.id).catch { e -> Log.e(TAG, "[PROFILE] observeWallet failed", e); emit(CoinWallet.EMPTY) },
+                    ) { myApps, myAssignments, transactions, wallet ->
+                        build(user, myApps, myAssignments, transactions, wallet)
                     }
                 }
             }
@@ -84,13 +85,15 @@ class ProfileViewModel(
         myApps: List<AppSubmission>,
         myAssignments: List<TestAssignment>,
         transactions: List<CoinTransaction>,
+        wallet: CoinWallet,
     ): ProfileUiState {
         Log.d("ADMIN_DEBUG", "Current UID: ${user.id}")
         Log.d("ADMIN_DEBUG", "Current role: ${user.role}")
         Log.d("ADMIN_DEBUG", "isAdmin: ${user.role == UserRole.Admin}")
-        val earned = transactions
-            .filter { it.kind == CoinTransactionKind.Earn || it.kind == CoinTransactionKind.Bonus }
-            .sumOf { it.amount }
+        // Nothing is "earned" under the commitment model, so no lifetime
+        // earnings figure is computed here. The balance comes from the
+        // server-maintained wallet, never from summing the ledger page above:
+        // that page is capped, so a client-side sum would silently diverge.
         val historyItems = myAssignments.map { a ->
             ProfileHistoryItem(
                 id = a.id,
@@ -98,7 +101,7 @@ class ProfileViewModel(
                 appName = a.appId.substringAfter("app_").replaceFirstChar { it.uppercase() },
                 daysCompleted = a.daysCompleted,
                 daysRequired = a.daysRequired,
-                coinReward = a.coinReward,
+                commitmentAmount = a.commitmentAmount,
                 status = a.status,
             )
         }
@@ -106,11 +109,10 @@ class ProfileViewModel(
             displayName = user.displayName.ifBlank { "Developer" },
             email = user.email,
             joinedIso = df.format(Date(user.createdAtMillis)),
-            coinBalance = user.coinBalance,
+            wallet = wallet,
             trustScore = user.trustScore,
             appsSubmitted = myApps.size,
             testsCompleted = myAssignments.count { it.status == AssignmentStatus.Completed },
-            totalCoinsEarned = earned,
             isAdmin = user.role == UserRole.Admin,
             recentTransactions = transactions.take(5).map {
                 ProfileTransactionRow(
@@ -119,6 +121,7 @@ class ProfileViewModel(
                     kind = it.kind,
                     reason = it.reason,
                     whenIso = df.format(Date(it.createdAtMillis)),
+                    isLegacy = it.isLegacyRewardEntry,
                 )
             },
             historyAssignments = historyItems,

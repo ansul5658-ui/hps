@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,6 +46,7 @@ import com.apptesting.app.core.designsystem.component.ErrorState
 import com.apptesting.app.core.designsystem.component.LoadingState
 import com.apptesting.app.core.designsystem.component.ResponsivePane
 import com.apptesting.app.core.model.CoinTransactionKind
+import com.apptesting.app.core.model.CoinWallet
 
 @Composable
 fun CoinWalletScreen(
@@ -57,7 +59,7 @@ fun CoinWalletScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("Coin Wallet") },
+                title = { Text("Testing Coins") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back))
@@ -118,19 +120,19 @@ private fun WalletContent(state: ProfileUiState.Content) {
                 }
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(text = "Current Coin Balance", style = MaterialTheme.typography.labelLarge)
+                    Text(text = "Available", style = MaterialTheme.typography.labelLarge)
+                    // The spec's exact shape: "Testing Coins: 0" when empty,
+                    // "Testing Coins: 50" when funded. Never framed as money.
                     Text(
-                        text = "${state.coinBalance} Coins",
+                        text = "Testing Coins: ${state.wallet.available}",
                         style = MaterialTheme.typography.headlineLarge,
                         fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        text = "Total Earned: ${state.totalCoinsEarned} Coins",
-                        style = MaterialTheme.typography.bodyMedium,
                     )
                 }
             }
         }
+
+        WalletBreakdown(state.wallet)
 
         Text(
             text = "Transaction History",
@@ -142,8 +144,11 @@ private fun WalletContent(state: ProfileUiState.Content) {
         if (state.recentTransactions.isEmpty()) {
             EmptyState(
                 icon = Icons.Rounded.Savings,
-                title = "No coin activity yet",
-                body = "Complete testing assignments to earn Coins.",
+                title = "No Testing Coin activity yet",
+                // Says nothing about earning. Coins are committed and returned,
+                // never earned, and this is the screen where that has to land.
+                body = "Testing Coins are committed when you take on a test, " +
+                    "and returned when you complete it.",
             )
         } else {
             Card(
@@ -194,19 +199,108 @@ private fun WalletTransactionItem(tx: ProfileTransactionRow) {
             )
         }
         Spacer(Modifier.width(12.dp))
-        val (signPrefix, tint) = when (tx.kind) {
-            CoinTransactionKind.Earn, CoinTransactionKind.Bonus ->
-                "+" to MaterialTheme.colorScheme.tertiary
-            CoinTransactionKind.Spend, CoinTransactionKind.Penalty ->
-                "-" to MaterialTheme.colorScheme.error
-            CoinTransactionKind.Adjustment ->
-                "" to MaterialTheme.colorScheme.onSurface
-        }
+        val (signPrefix, tint) = coinRowStyle(tx.kind, tx.isLegacy)
         Text(
-            text = "$signPrefix${tx.amount} Coins",
+            text = "$signPrefix${tx.amount}",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             color = tint,
         )
+    }
+}
+
+/**
+ * Available / committed / forfeited, spelled out.
+ *
+ * Three separate numbers rather than one total, because they mean genuinely
+ * different things to the user: what they can commit now, what is at stake
+ * right now, and what they have already lost. Rolling them into one figure
+ * would hide the only number that can go down permanently.
+ */
+@Composable
+private fun WalletBreakdown(wallet: CoinWallet) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            BreakdownRow(
+                label = "Available",
+                value = wallet.available,
+                caption = "Ready to commit to a new test",
+            )
+            BreakdownRow(
+                label = "Committed",
+                value = wallet.locked,
+                caption = "At stake on tests you are running now",
+            )
+            BreakdownRow(
+                label = "Forfeited",
+                value = wallet.forfeitedTotal,
+                caption = "Lost from commitments that were not completed",
+            )
+            // Testing Coins are not money. Saying so once, here, is the honest
+            // place for it — this is the screen a user opens expecting a balance.
+            Text(
+                text = "Testing Coins are a commitment, not cash. They cannot be " +
+                    "withdrawn or transferred.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BreakdownRow(label: String, value: Int, caption: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = caption,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = value.toString(),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/**
+ * Sign and colour for one ledger row, shared with the Profile screen.
+ *
+ * A [CoinTransactionKind.Lock] is shown as a negative because available coins
+ * go down, even though nothing was spent — the user's spendable balance is
+ * what the sign describes. Reward-era entries are shown unsigned and muted:
+ * they are history, and they no longer move any balance, so giving one a "+"
+ * would imply a credit the wallet never received.
+ */
+@Composable
+internal fun coinRowStyle(kind: CoinTransactionKind, isLegacy: Boolean): Pair<String, Color> {
+    if (isLegacy) return "" to MaterialTheme.colorScheme.onSurfaceVariant
+    return when (kind) {
+        CoinTransactionKind.Purchase,
+        CoinTransactionKind.Unlock,
+        CoinTransactionKind.Adjustment,
+        -> "+" to MaterialTheme.colorScheme.tertiary
+
+        CoinTransactionKind.Lock,
+        CoinTransactionKind.Reversal,
+        -> "-" to MaterialTheme.colorScheme.onSurface
+
+        CoinTransactionKind.Forfeit -> "-" to MaterialTheme.colorScheme.error
+        CoinTransactionKind.Unknown -> "" to MaterialTheme.colorScheme.onSurfaceVariant
     }
 }

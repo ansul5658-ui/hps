@@ -108,8 +108,15 @@ data class TestAssignment(
     val daysCompleted: Int = 0,
     /** server-authoritative — driven by tester actions + admin verification */
     val status: AssignmentStatus = AssignmentStatus.Ready,
-    /** server-authoritative — Coin reward awarded on verified completion */
-    val coinReward: Int = 0,
+    /**
+     * server-authoritative — Testing Coins STAKED on this assignment.
+     *
+     * This is a commitment, not a payout: completing returns the same coins,
+     * failing forfeits them. Read from `commitmentAmount`, falling back to the
+     * reward-era `coinReward` field for assignments created before the wallet
+     * existed, so historical records still display a sensible number.
+     */
+    val commitmentAmount: Int = 0,
     /**
      * Last day the tester logged testing progress, formatted as `yyyy-MM-dd`
      * in UTC — the one definition of "today" that the client and Firestore
@@ -134,19 +141,134 @@ enum class AssignmentStatus {
     Missed,
 }
 
-/** A single credit or debit in a user's Coin wallet. Rules configured server-side. */
+/**
+ * A user's Testing Coin wallet — `users/{uid}/wallet/balance`.
+ *
+ * PRODUCT MODEL
+ * Testing Coins are a COMMITMENT device, not a reward. 50 coins represent a
+ * 50-rupee commitment staked on a testing assignment. They are not cash, they
+ * cannot be withdrawn, and they cannot be transferred to another user. A
+ * completed assignment returns the SAME coins — there is no completion bonus.
+ *
+ * SECURITY NOTE
+ * Every field here is server-authoritative. The document is written only by
+ * Cloud Functions inside a transaction, and Firestore rules refuse every
+ * client write to it, including deletes. This class is a read model: it has no
+ * mutation helpers and must not gain any. In particular, do NOT add a method
+ * that derives a balance from the ledger on-device — the client sees a capped,
+ * ordered page of `coinTransactions`, so any client-side fold would silently
+ * disagree with the server. [available] is the number to trust and display.
+ */
+data class CoinWallet(
+    /** Spendable now — what a new commitment can be funded from. */
+    val available: Int = 0,
+    /** Staked on active commitments. Not spendable, not lost. */
+    val locked: Int = 0,
+    /** Lifetime total lost to failed commitments. Never decreases. */
+    val forfeitedTotal: Int = 0,
+    /** Lifetime total bought with real money. Always 0 in the pilot. */
+    val purchasedTotal: Int = 0,
+    /** Net of admin grants and corrections. */
+    val adjustmentNet: Int = 0,
+    /** How many ledger entries the server has folded into this document. */
+    val ledgerCount: Int = 0,
+    val lastEntryId: String? = null,
+    val updatedAtMillis: Long = 0L,
+    /**
+     * False when the user has no wallet document yet, which is the normal
+     * state for an account that has never transacted. Rendered as a real zero
+     * balance rather than an error — see [CoinWallet.EMPTY].
+     */
+    val exists: Boolean = false,
+) {
+    /**
+     * The invariant the server maintains. Exposed so the UI (and tests) can
+     * detect a wallet that disagrees with itself rather than displaying it as
+     * if it were sound. The client never repairs it — reconciliation is an
+     * admin-side, server-side operation.
+     */
+    val isConsistent: Boolean
+        get() = available >= 0 &&
+            locked >= 0 &&
+            forfeitedTotal >= 0 &&
+            available + locked + forfeitedTotal == purchasedTotal + adjustmentNet
+
+    companion object {
+        /** A user who has never transacted. Not an error state. */
+        val EMPTY = CoinWallet()
+    }
+}
+
+/**
+ * A single entry in a user's append-only Coin ledger.
+ *
+ * SECURITY NOTE
+ * Every field is server-authoritative. The three deltas are derived on the
+ * server from [kind] and are never chosen by a caller. Rules refuse every
+ * client create, update and delete.
+ */
 data class CoinTransaction(
     val id: String = "",
     val userId: String = "",
     val amount: Int = 0,
-    val kind: CoinTransactionKind = CoinTransactionKind.Earn,
+    val kind: CoinTransactionKind = CoinTransactionKind.Adjustment,
+    val source: CoinTransactionSource = CoinTransactionSource.Unknown,
+    val deltaAvailable: Int = 0,
+    val deltaLocked: Int = 0,
+    val deltaForfeited: Int = 0,
     val reason: String = "",
     val relatedAssignmentId: String? = null,
     val createdAtMillis: Long = 0L,
-    val recordedByAdmin: Boolean = false,
-)
+    val actorId: String? = null,
+    /**
+     * Schema of the stored document. `1` is a reward-era entry written before
+     * the commitment model; those carry an `amount` but no deltas, and the
+     * server does not fold them into the wallet. Kept visible rather than
+     * hidden so history stays readable.
+     */
+    val schemaVersion: Int = 1,
+) {
+    /** True for a pre-commitment-model entry that no longer affects a balance. */
+    val isLegacyRewardEntry: Boolean get() = schemaVersion < 2
+}
 
-enum class CoinTransactionKind { Earn, Spend, Bonus, Penalty, Adjustment }
+/**
+ * What a ledger entry did to the balance.
+ *
+ * Mirrors the kinds in `functions/lib/constants.js`. [Earn] is deliberately
+ * absent: the reward model it belonged to is gone. Historical "earn" documents
+ * parse as [Unknown] so they render as history without being mistaken for a
+ * current-model movement.
+ */
+enum class CoinTransactionKind {
+    /** Bought with real money. Unused in the pilot. */
+    Purchase,
+    /** Staked on a commitment: available -> locked. */
+    Lock,
+    /** Commitment met: locked -> available. The same coins, not new ones. */
+    Unlock,
+    /** Commitment failed: locked -> forfeited. */
+    Forfeit,
+    /** Admin grant or correction. */
+    Adjustment,
+    /** An adjustment undone. */
+    Reversal,
+    /** An entry this build does not recognise, including reward-era ones. */
+    Unknown,
+}
+
+/** Where a ledger entry came from. Mirrors `COIN_SOURCES` on the server. */
+enum class CoinTransactionSource {
+    Payment,
+    Commitment,
+    Completion,
+    Failure,
+    Cancellation,
+    AdminGrant,
+    AdminReversal,
+    Migration,
+    Unknown,
+}
 
 /**
  * One lightweight Quick Test session.

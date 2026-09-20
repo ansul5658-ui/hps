@@ -16,7 +16,7 @@ const {
   OFFICIAL_GROUP_ID,
   REQUIRED_TESTER_COUNT,
   DEFAULT_DAYS_REQUIRED,
-  DEFAULT_COIN_REWARD,
+  DEFAULT_COMMITMENT_AMOUNT,
 } = require("./lib/constants");
 const { selectTesters, assignmentIdFor } = require("./lib/matching");
 const { clampRequestedCount } = require("./lib/validation");
@@ -158,7 +158,12 @@ async function runMatching(db, { appId, requestedCount, groupIdOverride }) {
       groupId,
       daysRequired: DEFAULT_DAYS_REQUIRED,
       daysCompleted: 0,
-      coinReward: DEFAULT_COIN_REWARD,
+      // Coins the tester STAKES on this assignment, snapshotted at creation.
+      // This is not a payout: completing returns the same coins, failing
+      // forfeits them. Replaces the reward-era `coinReward` field, which
+      // existing assignment documents may still carry - nothing reads it any
+      // more, and it is deliberately left in place rather than migrated.
+      commitmentAmount: DEFAULT_COMMITMENT_AMOUNT,
       status: "ready",
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),

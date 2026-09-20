@@ -68,6 +68,11 @@ object ServiceLocator {
     val assignmentRepository: AssignmentRepository by lazy {
         if (isFirebaseEnabled) FirestoreAssignmentRepository() else mockAssignments
     }
+    /**
+     * Testing Coin wallet + ledger. Read-only in both modes — coins move only
+     * inside Cloud Functions, and rules refuse every client write to both
+     * paths. See [CoinRepository].
+     */
     val coinRepository: CoinRepository by lazy {
         if (isFirebaseEnabled) FirestoreCoinRepository() else mockCoins
     }

@@ -129,7 +129,7 @@ fun HelpFeedbackScreen(
                         HelpRowItem(
                             icon = Icons.AutoMirrored.Rounded.HelpOutline,
                             title = "Testing Guidelines & FAQ",
-                            subtitle = "Learn about Coins, Trust Score, and 14-day closed testing",
+                            subtitle = "Learn about Testing Coins, Trust Score, and 14-day closed testing",
                             onClick = {
                                 scope.launch { snackbar.showSnackbar("Test assignments run for 14 days with daily check-ins.") }
                             },

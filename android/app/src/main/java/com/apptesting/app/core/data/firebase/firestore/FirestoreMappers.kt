@@ -5,6 +5,8 @@ import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.CoinTransaction
 import com.apptesting.app.core.model.CoinTransactionKind
+import com.apptesting.app.core.model.CoinTransactionSource
+import com.apptesting.app.core.model.CoinWallet
 import com.apptesting.app.core.model.Group
 import com.apptesting.app.core.model.GroupState
 import com.apptesting.app.core.model.GroupVisibility
@@ -147,7 +149,8 @@ internal fun parseGroupVisibility(raw: String?): GroupVisibility = when (raw) {
 // ---------------------------------------------------------------------------
 // TestAssignment — testingAssignments/{assignmentId}
 // Fields per spec: appId, testerId, developerId, daysRequired, daysCompleted,
-// coinReward, status, createdAt, updatedAt.
+// commitmentAmount (reward-era documents: coinReward), status, createdAt,
+// updatedAt.
 // Note: `daysCompleted` on the doc is server-authoritative (Cloud Functions
 // will keep it in sync with the logs collection). For Step 2 the repository
 // derives the "live" daysCompleted from the actual logs it sees, so the UI
@@ -167,7 +170,11 @@ internal fun DocumentSnapshot.toAssignment(
     daysRequired = getLong("daysRequired")?.toInt() ?: 14,
     daysCompleted = daysCompleted,
     status = parseAssignmentStatus(getString("status")),
-    coinReward = getLong("coinReward")?.toInt() ?: 0,
+    // `commitmentAmount` is what the server writes now. `coinReward` is the
+    // reward-era field: assignments created before the wallet existed still
+    // carry it, and reading it here keeps those records displaying a sensible
+    // stake instead of 0. Nothing pays it out — see functions/completion.js.
+    commitmentAmount = (getLong("commitmentAmount") ?: getLong("coinReward"))?.toInt() ?: 0,
     lastLoggedDayKey = lastLoggedDayKey,
 )
 
@@ -197,10 +204,39 @@ internal fun DocumentSnapshot.toCoinTransaction(userId: String): CoinTransaction
     userId = userId,
     amount = getLong("amount")?.toInt() ?: 0,
     kind = parseCoinKind(getString("kind")),
+    source = parseCoinSource(getString("source")),
+    deltaAvailable = getLong("deltaAvailable")?.toInt() ?: 0,
+    deltaLocked = getLong("deltaLocked")?.toInt() ?: 0,
+    deltaForfeited = getLong("deltaForfeited")?.toInt() ?: 0,
     reason = getString("reason").orEmpty(),
-    relatedAssignmentId = getString("relatedAssignmentId"),
+    // v2 entries name it `assignmentId`; reward-era ones used
+    // `relatedAssignmentId`. Both are read so history stays linkable.
+    relatedAssignmentId = getString("assignmentId") ?: getString("relatedAssignmentId"),
     createdAtMillis = timestampMillis("createdAt"),
-    recordedByAdmin = getBoolean("recordedByAdmin") ?: false,
+    actorId = getString("actorId"),
+    // Absent means a pre-wallet document, which is exactly schema v1.
+    schemaVersion = getLong("schemaVersion")?.toInt() ?: 1,
+)
+
+// ---------------------------------------------------------------------------
+// CoinWallet — users/{uid}/wallet/balance
+//
+// Server-authoritative in full: written only by Cloud Functions inside a
+// transaction, and refused to every client by security rules. A missing
+// document is the normal state for an account that has never transacted, and
+// maps to a real zero wallet rather than an error.
+// ---------------------------------------------------------------------------
+
+internal fun DocumentSnapshot.toCoinWallet(): CoinWallet = CoinWallet(
+    available = getLong("available")?.toInt() ?: 0,
+    locked = getLong("locked")?.toInt() ?: 0,
+    forfeitedTotal = getLong("forfeitedTotal")?.toInt() ?: 0,
+    purchasedTotal = getLong("purchasedTotal")?.toInt() ?: 0,
+    adjustmentNet = getLong("adjustmentNet")?.toInt() ?: 0,
+    ledgerCount = getLong("ledgerCount")?.toInt() ?: 0,
+    lastEntryId = getString("lastEntryId"),
+    updatedAtMillis = timestampMillis("updatedAt"),
+    exists = exists(),
 )
 
 // ---------------------------------------------------------------------------
@@ -225,10 +261,33 @@ internal fun DocumentSnapshot.toQuickTestSession(): QuickTestSession = QuickTest
     completedAtMillis = (get("completedAt") as? Timestamp)?.toDate()?.time,
 )
 
+/**
+ * Mirrors `COIN_KINDS` in functions/lib/constants.js.
+ *
+ * The fallback is [CoinTransactionKind.Unknown], NOT a real kind. The old
+ * mapper defaulted to `Earn`, which meant any unrecognised document rendered
+ * as a credit — including the reward-era "earn" entries that no longer affect
+ * a balance at all. An unknown movement must look unknown.
+ */
 internal fun parseCoinKind(raw: String?): CoinTransactionKind = when (raw) {
-    "spend" -> CoinTransactionKind.Spend
-    "bonus" -> CoinTransactionKind.Bonus
-    "penalty" -> CoinTransactionKind.Penalty
+    "purchase" -> CoinTransactionKind.Purchase
+    "lock" -> CoinTransactionKind.Lock
+    "unlock" -> CoinTransactionKind.Unlock
+    "forfeit" -> CoinTransactionKind.Forfeit
     "adjustment" -> CoinTransactionKind.Adjustment
-    else -> CoinTransactionKind.Earn
+    "reversal" -> CoinTransactionKind.Reversal
+    else -> CoinTransactionKind.Unknown
+}
+
+/** Mirrors `COIN_SOURCES` in functions/lib/constants.js. */
+internal fun parseCoinSource(raw: String?): CoinTransactionSource = when (raw) {
+    "payment" -> CoinTransactionSource.Payment
+    "commitment" -> CoinTransactionSource.Commitment
+    "completion" -> CoinTransactionSource.Completion
+    "failure" -> CoinTransactionSource.Failure
+    "cancellation" -> CoinTransactionSource.Cancellation
+    "adminGrant" -> CoinTransactionSource.AdminGrant
+    "adminReversal" -> CoinTransactionSource.AdminReversal
+    "migration" -> CoinTransactionSource.Migration
+    else -> CoinTransactionSource.Unknown
 }

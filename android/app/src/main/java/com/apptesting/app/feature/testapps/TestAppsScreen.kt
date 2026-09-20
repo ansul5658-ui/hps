@@ -76,6 +76,7 @@ import com.apptesting.app.core.designsystem.component.ScreenContainer
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.CoinWallet
 
 /**
  * The Apps screen — two clearly separated discovery surfaces.
@@ -124,7 +125,7 @@ fun TestAppsScreen(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             AppsTopBar(
-                coinBalance = (state as? TestAppsUiState.Content)?.coinBalance,
+                wallet = (state as? TestAppsUiState.Content)?.wallet,
                 unreadCount = (state as? TestAppsUiState.Content)?.unreadNotifications ?: 0,
             )
         },
@@ -155,12 +156,12 @@ fun TestAppsScreen(
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun AppsTopBar(coinBalance: Int?, unreadCount: Int) {
+private fun AppsTopBar(wallet: CoinWallet?, unreadCount: Int) {
     TopAppBar(
         title = { Text("Apps", fontWeight = FontWeight.Bold) },
         actions = {
-            if (coinBalance != null) {
-                TestingCoinChip(balance = coinBalance)
+            if (wallet != null) {
+                TestingCoinChip(wallet = wallet)
                 Spacer(Modifier.width(4.dp))
             }
             BadgedBox(
@@ -187,12 +188,14 @@ private fun AppsTopBar(coinBalance: Int?, unreadCount: Int) {
 /**
  * Read-only Testing Coin balance.
  *
- * A single total, with no Available/Locked split and no call to action,
- * because the wallet that would give those meaning is a later batch. Showing
- * one number the user already has is honest; inventing a breakdown is not.
+ * Shows AVAILABLE, not a combined total: this chip sits next to a list of
+ * tests the user might take on, so the only useful number is what they could
+ * actually commit right now. A total that included locked coins would read as
+ * spendable and it is not. Content description names the split so a screen
+ * reader user is not left guessing which number this is.
  */
 @Composable
-private fun TestingCoinChip(balance: Int) {
+private fun TestingCoinChip(wallet: CoinWallet) {
     Surface(
         shape = CircleShape,
         color = MaterialTheme.colorScheme.tertiaryContainer,
@@ -203,13 +206,17 @@ private fun TestingCoinChip(balance: Int) {
         ) {
             Icon(
                 imageVector = Icons.Rounded.Savings,
-                contentDescription = "Testing Coin balance",
+                contentDescription = if (wallet.locked > 0) {
+                    "Testing Coins: ${wallet.available} available, ${wallet.locked} committed"
+                } else {
+                    "Testing Coins: ${wallet.available} available"
+                },
                 tint = MaterialTheme.colorScheme.onTertiaryContainer,
                 modifier = Modifier.size(16.dp),
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                text = "$balance",
+                text = "${wallet.available}",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onTertiaryContainer,

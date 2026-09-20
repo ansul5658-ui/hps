@@ -4,6 +4,7 @@ import android.net.Uri
 import com.apptesting.app.core.model.AppApprovalStatus
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.CoinTransaction
+import com.apptesting.app.core.model.CoinWallet
 import com.apptesting.app.core.model.Group
 import com.apptesting.app.core.model.GroupMember
 import com.apptesting.app.core.model.Notification
@@ -95,8 +96,66 @@ sealed interface LogDayResult {
     data class Error(val message: String) : LogDayResult
 }
 
+/**
+ * The Testing Coin wallet and its ledger.
+ *
+ * Testing Coins are a COMMITMENT device, not a reward: coins are staked on an
+ * assignment, the same coins are returned when it completes, and they are
+ * forfeited when it fails. They are not cash, are not withdrawable and cannot
+ * be transferred between users.
+ *
+ * SECURITY NOTE
+ * This interface is deliberately READ-ONLY, and must stay that way. Security
+ * rules refuse every client write to the `wallet` and `coinTransactions`
+ * subcollections under a user, so a mutating method here could only ever
+ * be a Cloud Function call — and value-moving calls belong on their own
+ * narrow interfaces (see [WalletCommitmentGateway]) where each one can be
+ * reasoned about separately. Do not add `setBalance`, `spend`, `unlock` or
+ * anything like them.
+ *
+ * Note also what is absent: there is no "compute my balance from the ledger"
+ * method. [observeWallet] reads the server-maintained document.
+ * [observeTransactions] returns a capped, ordered page for display only, so
+ * folding it on-device would silently disagree with the server once a user has
+ * more entries than the page holds.
+ */
 interface CoinRepository {
+    /**
+     * The server-maintained wallet document.
+     *
+     * Emits [CoinWallet.EMPTY] (with `exists = false`) for a user who has
+     * never transacted — that is a real zero balance, not an error.
+     */
+    fun observeWallet(userId: String): Flow<CoinWallet>
+
+    /** Ledger entries, most recent first. Display only. */
     fun observeTransactions(userId: String): Flow<List<CoinTransaction>>
+}
+
+/**
+ * Value-moving wallet operations, as calls to the server.
+ *
+ * Nothing implements the commitment half of this yet: locking coins against an
+ * assignment, unlocking them on success and forfeiting them on failure are a
+ * later batch. The interface exists now so the join flow has something to
+ * depend on, and so it is obvious where such a call must live when it lands —
+ * inside a Cloud Function, never as a Firestore write.
+ *
+ * SECURITY NOTE
+ * Every method here must take the minimum the server needs to identify the
+ * operation, and never an amount. The amount for a commitment comes from the
+ * assignment document, which no client can write.
+ */
+interface WalletCommitmentGateway {
+    /**
+     * Ask the backend to stake this assignment's commitment.
+     *
+     * Deliberately unimplemented in this batch: returns a failure rather than
+     * a fake success, so nothing can ship a UI that pretends coins were
+     * locked. Note the absence of an amount parameter — that is the point.
+     */
+    suspend fun lockCommitment(assignmentId: String): Result<Unit> =
+        Result.failure(UnsupportedOperationException("Committing coins is not enabled yet."))
 }
 
 /**

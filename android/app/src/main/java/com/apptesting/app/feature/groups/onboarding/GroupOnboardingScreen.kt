@@ -122,7 +122,7 @@ fun GroupOnboardingScreen(
                 Spacer(Modifier.height(12.dp))
                 ValueBullet("Access community testing assignments.")
                 Spacer(Modifier.height(12.dp))
-                ValueBullet("Help developers test their apps and earn Coins.")
+                ValueBullet("Help developers test their apps and build your trust score.")
 
                 Spacer(Modifier.height(40.dp))
 

@@ -21,15 +21,23 @@ setGlobalOptions({ region: REGION });
 const adminOps = require("./admin");
 const groups = require("./groups");
 const assignments = require("./assignments");
-const rewards = require("./rewards");
+const completion = require("./completion");
+const wallet = require("./wallet");
 const quickTests = require("./quickTests");
 
 // Admin-only callables.
 exports.adminSetAppStatus = adminOps.adminSetAppStatus;
 exports.adminSetUserSuspended = adminOps.adminSetUserSuspended;
 exports.adminUpsertGroup = adminOps.adminUpsertGroup;
-exports.adminVerifyAssignment = rewards.adminVerifyAssignment;
+exports.adminVerifyAssignment = completion.adminVerifyAssignment;
 exports.adminRefreshQuickTestPool = quickTests.adminRefreshQuickTestPool;
+
+// Testing Coin wallet — a commitment device, not a reward system. Coins are
+// staked on an assignment and returned on success; there is no payout path
+// here, and `adminGrantCoins` issues PLAY MONEY for the pre-payment pilot.
+// `adminReconcileWallet` is read-only: it reports drift, it never repairs.
+exports.adminGrantCoins = wallet.adminGrantCoins;
+exports.adminReconcileWallet = wallet.adminReconcileWallet;
 
 // Group membership.
 exports.joinGroup = groups.joinGroup;

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.apptesting.app.core.data.AppRepository
 import com.apptesting.app.core.data.AssignmentRepository
+import com.apptesting.app.core.data.CoinRepository
 import com.apptesting.app.core.data.LogDayResult
 import com.apptesting.app.core.data.NotificationRepository
 import com.apptesting.app.core.data.QuickTestRepository
@@ -14,6 +15,7 @@ import com.apptesting.app.core.data.UserRepository
 import com.apptesting.app.core.model.AppApprovalStatus
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.CoinWallet
 import com.apptesting.app.core.model.QuickTestAllowance
 import com.apptesting.app.core.model.TestAssignment
 import com.apptesting.app.core.model.User
@@ -42,6 +44,7 @@ class TestAppsViewModel(
     private val assignments: AssignmentRepository,
     private val quickTests: QuickTestRepository,
     private val notifications: NotificationRepository,
+    private val coins: CoinRepository,
     private val time: TimeProvider,
 ) : ViewModel() {
 
@@ -51,6 +54,7 @@ class TestAppsViewModel(
         assignments = ServiceLocator.assignmentRepository,
         quickTests = ServiceLocator.quickTestRepository,
         notifications = ServiceLocator.notificationRepository,
+        coins = ServiceLocator.coinRepository,
         time = TimeProvider.Default,
     )
 
@@ -132,6 +136,8 @@ class TestAppsViewModel(
                             .catch { e -> Log.e(TAG, "[TEST_APPS] observeAllowance failed", e); emit(emptyAllowance()) },
                         notifications.observeUnread(user.id)
                             .catch { e -> Log.e(TAG, "[TEST_APPS] observeUnread failed", e); emit(emptyList()) },
+                        coins.observeWallet(user.id)
+                            .catch { e -> Log.e(TAG, "[TEST_APPS] observeWallet failed", e); emit(CoinWallet.EMPTY) },
                         filter,
                     ) { values ->
                         @Suppress("UNCHECKED_CAST")
@@ -142,7 +148,8 @@ class TestAppsViewModel(
                             poolAppIds = values[2] as List<String>,
                             allowance = values[3] as QuickTestAllowance,
                             unreadCount = (values[4] as List<*>).size,
-                            currentFilter = values[5] as TestFilter,
+                            wallet = values[5] as CoinWallet,
+                            currentFilter = values[6] as TestFilter,
                         )
                     }
                 }
@@ -165,6 +172,7 @@ class TestAppsViewModel(
         poolAppIds: List<String>,
         allowance: QuickTestAllowance,
         unreadCount: Int,
+        wallet: CoinWallet,
         currentFilter: TestFilter,
     ): TestAppsUiState.Content {
         val today = time.todayKey()
@@ -218,7 +226,7 @@ class TestAppsViewModel(
             quickTestsRemainingToday = allowance.remainingToday,
             quickTestDailyLimit = allowance.dailyLimit,
             rows = visibleRows,
-            coinBalance = user.coinBalance,
+            wallet = wallet,
             unreadNotifications = unreadCount,
         )
     }
