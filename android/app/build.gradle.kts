@@ -34,10 +34,37 @@ android {
             // No applicationIdSuffix here.
             // Firebase is configured for com.apptesting.app.
             isMinifyEnabled = false
+
+            // Host of the local Firebase Emulator Suite, for DEBUG BUILDS ONLY.
+            //
+            // Empty by default, so an ordinary debug build behaves exactly as
+            // before and talks to real Firebase. Set it to point a build at
+            // local emulators instead:
+            //
+            //   ./gradlew assembleDebug -PfirebaseEmulatorHost=127.0.0.1
+            //
+            // 127.0.0.1 is correct for a USB-connected physical phone when the
+            // emulator ports are tunnelled with `adb reverse` — the phone's own
+            // localhost then reaches this PC. A LAN IP (e.g. 192.168.1.8) works
+            // too when both are on the same network; adb reverse is preferred
+            // because it does not depend on Wi-Fi.
+            //
+            // The release block below hard-codes "", and the wiring code is
+            // additionally guarded by BuildConfig.DEBUG, so there is no way for
+            // this to reach a production build.
+            buildConfigField(
+                "String",
+                "FIREBASE_EMULATOR_HOST",
+                "\"${project.findProperty("firebaseEmulatorHost") ?: ""}\"",
+            )
         }
 
         release {
             isMinifyEnabled = false
+
+            // Never an emulator in release. Belt and braces alongside
+            // BuildConfig.DEBUG.
+            buildConfigField("String", "FIREBASE_EMULATOR_HOST", "\"\"")
 
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -62,6 +89,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {

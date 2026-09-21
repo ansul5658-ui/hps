@@ -97,9 +97,37 @@ internal class FirebaseAuthUserRepository(
     }
 
     // ---- AuthGateway ---------------------------------------------------
-    override fun isConfigured(): Boolean = true
+    /**
+     * False when this debug build is wired to the Auth emulator.
+     *
+     * Google sign-in needs a real Google ID token, which the local Auth
+     * emulator has no way to issue. Reporting "not configured" routes the
+     * existing sign-in screen down its demo branch, which calls
+     * [signInAsDemoUser] — no new UI, no new button, and nothing that can be
+     * reached from a production build.
+     */
+    override fun isConfigured(): Boolean = !FirebaseEmulator.isEnabled
 
     override fun webClientId(): String? = FirebaseAvailability.webClientId(appContext)
+
+    /**
+     * Anonymous sign-in against the local Auth EMULATOR. Debug-only.
+     *
+     * This is not a production auth bypass and cannot become one: it refuses
+     * unless [FirebaseEmulator.isEnabled], which requires a debug build that
+     * was explicitly built with an emulator host. In a release build
+     * `BuildConfig.DEBUG` is false, the host is hard-coded empty, and this
+     * returns a failure like the default implementation it overrides.
+     */
+    override suspend fun signInAsDemoUser(): Result<Unit> = runCatching {
+        check(FirebaseEmulator.isEnabled) {
+            "Demo sign-in is only available against the local Firebase emulator."
+        }
+        val result = auth.signInAnonymously().await()
+        val uid = result.user?.uid ?: error("Auth emulator returned no user.")
+        Log.w(TAG, "[EMULATOR] anonymous sign-in uid=$uid")
+        Unit
+    }
 
     override suspend fun signInWithGoogleIdToken(idToken: String): Result<Unit> = runCatching {
         Log.d(TAG, "[AUTH] Firebase signInWithCredential started")

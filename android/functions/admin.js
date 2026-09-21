@@ -20,7 +20,7 @@ const {
   requireBoolean,
   optionalString,
 } = require("./lib/guards");
-const { runMatching } = require("./assignments");
+const { runEligibilityPreview } = require("./assignments");
 
 /**
  * Callable: approve / reject / archive an app.
@@ -29,8 +29,11 @@ const { runMatching } = require("./assignments");
  * fields (ownerId, packageName, appName, …) are never touched, so a status
  * change cannot be used to smuggle in an app rewrite.
  *
- * Approving also kicks off tester matching. That is best-effort: a matching
- * failure is logged and reported, but never rolls back the approval.
+ * Approving also reports how many testers are ELIGIBLE to claim the app. That
+ * is advisory only and writes nothing: under the commitment model a tester
+ * becomes a tester by staking coins through `joinTestingAssignment`, never by
+ * being pushed an assignment. The preview is best-effort - a failure is logged
+ * and reported, but never rolls back the approval.
  */
 exports.adminSetAppStatus = onCall({ region: REGION }, async (request) => {
   const db = getFirestore();
@@ -70,17 +73,17 @@ exports.adminSetAppStatus = onCall({ region: REGION }, async (request) => {
     `admin ${uid} set app ${appId} ${outcome.from} -> ${outcome.to} (changed=${outcome.changed})`,
   );
 
-  let matching = null;
+  let eligibility = null;
   if (status === "approved") {
     try {
-      matching = await runMatching(db, { appId });
+      eligibility = await runEligibilityPreview(db, { appId });
     } catch (err) {
-      logger.error(`Matching after approval of ${appId} failed`, err);
-      matching = { created: 0, error: err.message || "Matching failed." };
+      logger.error(`Eligibility preview after approval of ${appId} failed`, err);
+      eligibility = { eligibleCount: 0, error: err.message || "Preview failed." };
     }
   }
 
-  return { appId, status, changed: outcome.changed, matching };
+  return { appId, status, changed: outcome.changed, eligibility };
 });
 
 /**

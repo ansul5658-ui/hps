@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG SOURCE SET ONLY.
+
+  Android blocks cleartext HTTP by default (API 28+), and the Firebase Emulator
+  Suite serves plain HTTP. Without this, a debug build pointed at local
+  emulators fails with "Cleartext HTTP traffic to 127.0.0.1 not permitted"
+  before any request leaves the device.
+
+  This file lives in src/debug/, so it is compiled into debug builds only and
+  cannot reach a release APK — the release build keeps Android's default
+  cleartext-denied posture. The exception is also scoped to loopback addresses:
+  127.0.0.1 and localhost are reachable from the phone only because the
+  emulator ports are tunnelled over USB with `adb reverse`. No public host is
+  permitted, so this cannot silently allow plaintext traffic to a real server.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

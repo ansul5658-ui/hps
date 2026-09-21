@@ -1,13 +1,27 @@
 /**
- * Testing assignment creation + progress bookkeeping.
+ * Tester eligibility preview + assignment progress bookkeeping.
  *
- * `testingAssignments` documents are created here and nowhere else: security
- * rules deny `create` to every client, so the only way one comes into
- * existence is through this module running with Admin SDK credentials.
+ * WHAT THIS MODULE NO LONGER DOES
+ * It used to CREATE testing assignments: an admin approved an app and the
+ * server pushed assignments onto matched testers. Under the commitment product
+ * that is unsafe, because such an assignment is a live tester obligation with
+ * no coins staked behind it - the tester never agreed to it and never funded
+ * it, yet it would look identical to a real commitment.
+ *
+ * There is now exactly ONE way a tester commitment comes into existence:
+ * `joinTestingAssignment` in `commitments.js`, which validates eligibility,
+ * verifies the balance, locks the coins, creates the cycle assignment and the
+ * active claim, and commits all of it in one transaction. Nothing in this file
+ * writes `testingAssignments` any more, and nothing here may start doing so
+ * again - a creation path that bypassed the coin lock would reintroduce
+ * exactly the inconsistency the commitment model exists to prevent.
+ *
+ * What survives is the part that was always useful: working out WHO is
+ * eligible. `previewEligibleTesters` answers that question for the admin
+ * console and for the app-approval log, and writes nothing at all.
  */
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
-const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const logger = require("firebase-functions/logger");
 
@@ -15,10 +29,8 @@ const {
   REGION,
   OFFICIAL_GROUP_ID,
   REQUIRED_TESTER_COUNT,
-  DEFAULT_DAYS_REQUIRED,
-  DEFAULT_COMMITMENT_AMOUNT,
 } = require("./lib/constants");
-const { selectTesters, assignmentIdFor } = require("./lib/matching");
+const { selectTesters } = require("./lib/matching");
 const { clampRequestedCount } = require("./lib/validation");
 const {
   requireAuth,
@@ -46,15 +58,25 @@ function millisOf(timestamp) {
 }
 
 /**
- * Core matching routine, shared by the callable and by app approval.
+ * Work out which testers are ELIGIBLE to claim this app. Writes nothing.
  *
- * Returns a summary rather than throwing when there is simply nothing to do,
- * so that approving an app never fails just because no testers are available.
+ * This is what is left of the old push-matching routine. It performs exactly
+ * the same reads and runs exactly the same eligibility predicates
+ * (`selectTesters`), but it no longer creates anything: the returned list is
+ * advisory. A tester becomes a tester by claiming and staking coins, not by
+ * appearing here.
  *
- * @returns {Promise<{appId: string, created: number, totalTesters: number,
- *                    slotsRemaining: number, skipped: Array}>}
+ * `slotsRemaining` is still computed, because the tester cap it expresses is
+ * real - `commitments.js` enforces it at claim time, where the app document is
+ * read inside the transaction and so cannot be raced.
+ *
+ * Returns a summary rather than throwing when there is nothing to report, so
+ * approving an app never fails just because no testers are available.
+ *
+ * @returns {Promise<{appId: string, eligible: Array<string>, eligibleCount: number,
+ *                    totalTesters: number, slotsRemaining: number, skipped: Array}>}
  */
-async function runMatching(db, { appId, requestedCount, groupIdOverride }) {
+async function runEligibilityPreview(db, { appId, requestedCount, groupIdOverride }) {
   const appRef = db.doc(`apps/${appId}`);
   const appSnap = await appRef.get();
   if (!appSnap.exists) {
@@ -64,7 +86,7 @@ async function runMatching(db, { appId, requestedCount, groupIdOverride }) {
   if (app.status !== "approved") {
     throw new HttpsError(
       "failed-precondition",
-      "Only an approved app can receive testers.",
+      "Only an approved app can be tested.",
     );
   }
 
@@ -73,7 +95,9 @@ async function runMatching(db, { appId, requestedCount, groupIdOverride }) {
     throw new HttpsError("failed-precondition", "That app has no owner recorded.");
   }
 
-  // Existing assignments decide both the remaining slots and who to skip.
+  // Existing assignments decide both the remaining slots and who to skip. A
+  // tester who already holds a commitment for this app is not eligible for a
+  // second one, which is the same rule `checkClaimEligible` enforces.
   const existingSnap = await db
     .collection("testingAssignments")
     .where("appId", "==", appId)
@@ -91,7 +115,8 @@ async function runMatching(db, { appId, requestedCount, groupIdOverride }) {
   if (slotsRemaining === 0 || maxThisRun === 0) {
     return {
       appId,
-      created: 0,
+      eligible: [],
+      eligibleCount: 0,
       totalTesters: alreadyAssignedTesterIds.length,
       slotsRemaining,
       skipped: [],
@@ -136,79 +161,34 @@ async function runMatching(db, { appId, requestedCount, groupIdOverride }) {
     maxThisRun,
   });
 
-  if (selected.length === 0) {
-    return {
-      appId,
-      created: 0,
-      totalTesters: alreadyAssignedTesterIds.length,
-      slotsRemaining,
-      skipped,
-    };
-  }
+  logger.info(
+    `app ${appId}: ${selected.length} tester(s) eligible to claim, ` +
+      `${slotsRemaining} slot(s) remaining`,
+  );
 
-  // Deterministic ids + `create` mean a concurrent duplicate run fails loudly
-  // instead of double-assigning a tester.
-  const batch = db.batch();
-  for (const testerId of selected) {
-    const ref = db.doc(`testingAssignments/${assignmentIdFor(appId, testerId)}`);
-    batch.create(ref, {
-      appId,
-      testerId,
-      developerId: ownerId,
-      groupId,
-      daysRequired: DEFAULT_DAYS_REQUIRED,
-      daysCompleted: 0,
-      // Coins the tester STAKES on this assignment, snapshotted at creation.
-      // This is not a payout: completing returns the same coins, failing
-      // forfeits them. Replaces the reward-era `coinReward` field, which
-      // existing assignment documents may still carry - nothing reads it any
-      // more, and it is deliberately left in place rather than migrated.
-      commitmentAmount: DEFAULT_COMMITMENT_AMOUNT,
-      status: "ready",
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-  }
-  batch.update(appRef, {
-    testerCount: alreadyAssignedTesterIds.length + selected.length,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-
-  try {
-    await batch.commit();
-  } catch (err) {
-    if (err && err.code === 6) {
-      // ALREADY_EXISTS — another run won the race. Safe to report as a no-op.
-      logger.warn(`Assignment batch for ${appId} raced with another run`, err);
-      return {
-        appId,
-        created: 0,
-        totalTesters: alreadyAssignedTesterIds.length,
-        slotsRemaining,
-        skipped,
-      };
-    }
-    throw err;
-  }
-
-  logger.info(`Created ${selected.length} assignment(s) for app ${appId}`);
   return {
     appId,
-    created: selected.length,
-    totalTesters: alreadyAssignedTesterIds.length + selected.length,
-    slotsRemaining: slotsRemaining - selected.length,
+    eligible: selected,
+    eligibleCount: selected.length,
+    totalTesters: alreadyAssignedTesterIds.length,
+    slotsRemaining,
     skipped,
   };
 }
 
 /**
- * Callable: create testing assignments for an approved app.
+ * Callable: report which testers are eligible to claim an approved app.
  *
- * Authorized callers: the app's owner (a developer asking for testers) or an
- * admin. Everyone else is rejected — and no client can write the collection
- * directly, so this is the only door.
+ * READ-ONLY. This replaces the old `createTestingAssignments`, which pushed
+ * assignments onto testers. It cannot create an assignment, and it must not be
+ * given the ability to: a tester's obligation begins when they stake coins on
+ * it, which only `joinTestingAssignment` can do.
+ *
+ * Authorized callers: the app's owner (a developer checking reach) or an
+ * admin. Kept restricted even though it writes nothing, because the eligible
+ * list is other users' identities.
  */
-const createTestingAssignments = onCall({ region: REGION }, async (request) => {
+const previewEligibleTesters = onCall({ region: REGION }, async (request) => {
   const db = getFirestore();
   const uid = requireAuth(request);
   await requireNotSuspended(db, uid);
@@ -228,62 +208,20 @@ const createTestingAssignments = onCall({ region: REGION }, async (request) => {
     if (!isAdmin) {
       throw new HttpsError(
         "permission-denied",
-        "Only the app owner or an admin can request testers.",
+        "Only the app owner or an admin can see eligible testers.",
       );
     }
   }
 
-  return runMatching(db, { appId, requestedCount });
+  return runEligibilityPreview(db, { appId, requestedCount });
 });
 
-/**
- * Trigger: keep `testingAssignments.daysCompleted` server-authoritative.
- *
- * The count is recomputed from the `testingLogs` collection rather than
- * incremented, so it cannot drift and cannot be nudged by a client write.
- * A `ready` assignment moves to `inProgress` on its first log.
- *
- * Completion verification and any coin/trust-score effect are deliberately NOT
- * handled here — that is a later batch.
- */
-const syncAssignmentProgress = onDocumentCreated(
-  { region: REGION, document: "testingLogs/{logId}" },
-  async (event) => {
-    const db = getFirestore();
-    const snap = event.data;
-    if (!snap) return;
+// `syncAssignmentProgress` lived here: an onDocumentCreated trigger on
+// `testingLogs` that recomputed `daysCompleted` from a count. It was removed
+// with the arrival of the testing engine. `recordTestingDay` is now the only
+// creator of a testing log and it maintains `qualifyingDays` inside the same
+// transaction, so the trigger would have been a second writer racing the
+// first — and on the transaction that also returns 50 coins, that is not a
+// race worth having. One authority, or the field is not authoritative.
 
-    const assignmentId = snap.get("assignmentId");
-    if (!assignmentId) return;
-
-    const countSnap = await db
-      .collection("testingLogs")
-      .where("assignmentId", "==", assignmentId)
-      .count()
-      .get();
-    const daysCompleted = countSnap.data().count;
-
-    const ref = db.doc(`testingAssignments/${assignmentId}`);
-    try {
-      await db.runTransaction(async (tx) => {
-        const assignment = await tx.get(ref);
-        if (!assignment.exists) {
-          logger.warn(`Log references missing assignment ${assignmentId}`);
-          return;
-        }
-        const update = {
-          daysCompleted,
-          updatedAt: FieldValue.serverTimestamp(),
-        };
-        if (assignment.get("status") === "ready") {
-          update.status = "inProgress";
-        }
-        tx.update(ref, update);
-      });
-    } catch (err) {
-      logger.error(`Failed to sync progress for ${assignmentId}`, err);
-    }
-  },
-);
-
-module.exports = { createTestingAssignments, syncAssignmentProgress, runMatching };
+module.exports = { previewEligibleTesters, runEligibilityPreview };

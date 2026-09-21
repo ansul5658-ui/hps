@@ -96,15 +96,123 @@ function walletFromSnapshot(snap) {
 }
 
 /**
+ * Read a user's wallet inside a transaction, for update.
+ *
+ * Firestore requires every read before any write, so this is deliberately
+ * separate from `stageWalletEntry`. Reading the wallet also LOCKS it for the
+ * rest of the transaction under the server SDK's pessimistic concurrency,
+ * which is what makes two concurrent commitments against one balance
+ * serialize instead of both succeeding.
+ */
+async function readWalletForUpdate(tx, db, userId) {
+  const ref = db.doc(walletPath(userId));
+  const snap = await tx.get(ref);
+  return { ref, wallet: walletFromSnapshot(snap) };
+}
+
+/**
+ * Stage one ledger entry plus the matching wallet update.
+ *
+ * THE SINGLE PLACE COINS MOVE. Every value-moving path in this project -
+ * admin grant, commitment lock, completion unlock, forfeiture - funnels
+ * through here, so the delta derivation, the immutability guarantee and the
+ * invariant check exist once rather than four times.
+ *
+ * Callers pass a kind and an amount. The three deltas are derived from the
+ * kind by `checkEntry`; there is no parameter through which a caller could
+ * state its own balance change.
+ *
+ * @param tx       an open Firestore transaction, past its read phase
+ * @param current  the wallet read by `readWalletForUpdate`
+ * @returns the entry that was staged and the wallet it produces
+ */
+function stageWalletEntry(
+  tx,
+  db,
+  {
+    userId,
+    walletRef,
+    current,
+    entryId,
+    kind,
+    source,
+    amount,
+    reason,
+    assignmentId = null,
+    appId = null,
+    paymentRef = null,
+    actorId,
+    actorKind,
+    idempotencyKey,
+  },
+) {
+  const checked = checkEntry({ kind, source, amount });
+  if (!checked.ok) {
+    throw new HttpsError(checked.code, checked.message);
+  }
+
+  const entry = {
+    userId,
+    kind,
+    source,
+    deltaAvailable: checked.deltas.deltaAvailable,
+    deltaLocked: checked.deltas.deltaLocked,
+    deltaForfeited: checked.deltas.deltaForfeited,
+    amount,
+    reason,
+    // Present and null rather than absent, so every entry has one shape.
+    assignmentId,
+    appId,
+    paymentRef,
+    actorId,
+    actorKind,
+    idempotencyKey,
+    schemaVersion: WALLET_SCHEMA_VERSION,
+    createdAt: FieldValue.serverTimestamp(),
+  };
+
+  const next = applyEntry(current, { ...entry, id: entryId });
+  const invariants = checkInvariants(next);
+  if (!invariants.ok) {
+    // Refuse to persist a corrupt wallet. This is also what makes
+    // "lock more than available" and "unlock more than was locked"
+    // impossible: both produce a negative component, which fails here and
+    // aborts the whole transaction rather than writing a broken balance.
+    throw new HttpsError(
+      "failed-precondition",
+      `Refusing to write a wallet that breaks its invariants: ${invariants.errors.join("; ")}`,
+    );
+  }
+
+  // `create`, never `set`: an existing entry must fail the transaction rather
+  // than be overwritten. With deterministic entry ids this is what makes a
+  // replayed settlement fail loudly instead of moving coins twice.
+  tx.create(db.doc(ledgerPath(userId, entryId)), entry);
+  tx.set(walletRef, {
+    available: next.available,
+    locked: next.locked,
+    forfeitedTotal: next.forfeitedTotal,
+    purchasedTotal: next.purchasedTotal,
+    adjustmentNet: next.adjustmentNet,
+    ledgerCount: next.ledgerCount,
+    lastEntryId: entryId,
+    schemaVersion: WALLET_SCHEMA_VERSION,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  return { entry, entryId, wallet: next };
+}
+
+/**
  * Grant play-money Testing Coins to a tester, atomically.
  *
- * Split out from the callable - the same shape `runMatching` uses - so the
- * whole money path can be tested without the Functions runtime.
+ * Split out from the callable - the same shape every privileged path in this
+ * project uses - so the whole money path can be tested without the Functions
+ * runtime.
  */
 async function runAdminGrant(db, { targetUserId, amount, reason, idempotencyKey, adminUid }) {
   const entryId = grantEntryId(idempotencyKey);
   const ledgerRef = db.doc(ledgerPath(targetUserId, entryId));
-  const walletRef = db.doc(walletPath(targetUserId));
   const userRef = db.doc(`users/${targetUserId}`);
 
   return db.runTransaction(async (tx) => {
@@ -130,67 +238,28 @@ async function runAdminGrant(db, { targetUserId, amount, reason, idempotencyKey,
       );
     }
 
-    const walletSnap = await tx.get(walletRef);
-    const current = walletFromSnapshot(walletSnap);
+    const { ref: walletRefRead, wallet: current } = await readWalletForUpdate(
+      tx,
+      db,
+      targetUserId,
+    );
 
-    // ---- derive, never accept, the balance deltas --------------------
-    const checked = checkEntry({
-      kind: COIN_KIND_ADJUSTMENT,
-      source: COIN_SOURCE_ADMIN_GRANT,
-      amount,
-    });
-    if (!checked.ok) {
-      throw new HttpsError(checked.code, checked.message);
-    }
-
-    const entry = {
+    // ---- writes: these two commit together or not at all -------------
+    // Deltas are derived from the kind inside stageWalletEntry; nothing the
+    // caller sent can influence them. Play money is recorded as an
+    // adjustment, never a purchase, and carries no paymentRef.
+    const { wallet: next } = stageWalletEntry(tx, db, {
       userId: targetUserId,
+      walletRef: walletRefRead,
+      current,
+      entryId,
       kind: COIN_KIND_ADJUSTMENT,
       source: COIN_SOURCE_ADMIN_GRANT,
-      deltaAvailable: checked.deltas.deltaAvailable,
-      deltaLocked: checked.deltas.deltaLocked,
-      deltaForfeited: checked.deltas.deltaForfeited,
       amount,
       reason,
-      // Present and null rather than absent, so every entry has one shape.
-      assignmentId: null,
-      appId: null,
-      // Play money has no payment behind it. Never set this to a fake value.
-      paymentRef: null,
       actorId: adminUid,
       actorKind: ACTOR_KIND_ADMIN,
       idempotencyKey,
-      schemaVersion: WALLET_SCHEMA_VERSION,
-      createdAt: FieldValue.serverTimestamp(),
-    };
-
-    const next = applyEntry(current, { ...entry, id: entryId });
-    const invariants = checkInvariants(next);
-    if (!invariants.ok) {
-      // Refuse to persist a corrupt wallet. Reaching here means either stored
-      // state was already broken or KIND_DELTAS was edited badly; either way
-      // the right move is to stop, not to write.
-      throw new HttpsError(
-        "failed-precondition",
-        `Refusing to write a wallet that breaks its invariants: ${invariants.errors.join("; ")}`,
-      );
-    }
-
-    // ---- writes: these two commit together or not at all -------------
-    // `create`, never `set`: an existing entry must fail the transaction
-    // rather than be overwritten. This is what makes the ledger immutable
-    // even against our own server code.
-    tx.create(ledgerRef, entry);
-    tx.set(walletRef, {
-      available: next.available,
-      locked: next.locked,
-      forfeitedTotal: next.forfeitedTotal,
-      purchasedTotal: next.purchasedTotal,
-      adjustmentNet: next.adjustmentNet,
-      ledgerCount: next.ledgerCount,
-      lastEntryId: entryId,
-      schemaVersion: WALLET_SCHEMA_VERSION,
-      updatedAt: FieldValue.serverTimestamp(),
     });
 
     return {
@@ -357,6 +426,11 @@ const adminReconcileWallet = onCall({ region: REGION }, (request) =>
 module.exports = {
   adminGrantCoins,
   adminReconcileWallet,
+  // Shared transaction primitives - the commitment lifecycle in
+  // `commitments.js` moves coins through these, so there is exactly one
+  // implementation of "apply a ledger entry to a wallet".
+  readWalletForUpdate,
+  stageWalletEntry,
   // Exported for tests - no Functions runtime required.
   adminGrantCoinsImpl,
   adminReconcileWalletImpl,

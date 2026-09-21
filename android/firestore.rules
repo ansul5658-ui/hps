@@ -17,9 +17,15 @@ rules_version = '2';
 //   * A suspended account keeps read access and can still sign out or leave a
 //     group, but cannot submit apps, join groups, log testing days or claim
 //     completion.
-//   * `testingLogs` uses deterministic doc IDs ("{aid}__{yyyy-MM-dd}") AND a
-//     server-derived day key, so neither a repeat call nor a tampered device
-//     clock can manufacture extra testing days.
+//   * `testingLogs` is entirely server-written. A testing day is recorded
+//     only by the `recordTestingDay` callable, which derives the day key from
+//     the server clock and the assignment's PINNED IANA timezone — so the
+//     boundary is real local midnight, and a tampered device clock buys
+//     nothing. Deterministic ids ("{cycleAssignmentId}__{yyyy-MM-dd}") plus
+//     `tx.create` make a duplicate impossible at the storage layer.
+//   * `testingAssignments` has no client-writable field at all. The pinned
+//     commitment clock in particular is written once, at claim, and never
+//     again: a deadline that could be edited afterwards would not be one.
 //   * The Testing Coin wallet and its ledger are READ-ONLY to every client,
 //     including admins. Balances move only inside Cloud Function
 //     transactions, which derive the balance deltas from the entry kind
@@ -85,40 +91,14 @@ service cloud.firestore {
       return data.keys().hasOnly(keys);
     }
 
-    // Server clock, formatted to match the client's day key (UTC).
-    function pad2(n) {
-      return n < 10 ? '0' + string(n) : string(n);
-    }
-    function serverDayKey() {
-      return string(request.time.year())
-        + '-' + pad2(request.time.month())
-        + '-' + pad2(request.time.day());
-    }
-
-    function assignmentPath(assignmentId) {
-      return /databases/$(database)/documents/testingAssignments/$(assignmentId);
-    }
-
-    // The log's assignment must exist, belong to the caller, and still be in
-    // an active state.
-    //
-    // IMPORTANT: do not rewrite this as `let snapshot = exists(...) ? get(...) : null`.
-    // That form deploys with only a warning ("Invalid type. Received one of
-    // [null]. Expected one of [map]"), and passes the Firestore *emulator*
-    // rules tests, but is a real type-mismatch that should be avoided —
-    // confirmed via a real device against production that a live
-    // testingLogs create still fails PERMISSION_DENIED even with this `&&`
-    // form in place, so the null-ternary was NOT the (sole) cause of that
-    // failure. Root cause of the live PERMISSION_DENIED is still open — see
-    // Batch 4 report. This rewrite is kept regardless because the
-    // null-vs-map type mismatch is a genuine defect independent of that
-    // investigation, and the `&&` chain below is the same pattern used
-    // safely elsewhere in this file.
-    function ownsActiveAssignment(assignmentId) {
-      return exists(assignmentPath(assignmentId))
-        && get(assignmentPath(assignmentId)).data.testerId == request.auth.uid
-        && get(assignmentPath(assignmentId)).data.status in ['ready', 'inProgress'];
-    }
+    // `pad2`, `serverDayKey`, `assignmentPath` and `ownsActiveAssignment` were
+    // removed here. They existed solely to validate a CLIENT-written
+    // testingLogs create: the rule re-derived a UTC day key from
+    // `request.time` and confirmed the caller owned an active assignment.
+    // `recordTestingDay` does all of that server-side now, against the
+    // assignment's pinned IANA timezone rather than UTC, so the helpers had no
+    // remaining caller. Dead rule helpers are worth deleting rather than
+    // keeping: they read as live protection when nothing invokes them.
 
     // Fields on `users/{uid}` the client may write on create.
     function userCreateAllowed(data, uid) {
@@ -329,22 +309,61 @@ service cloud.firestore {
           || resource.data.developerId == request.auth.uid
       ));
 
-      // Assignments are created only by the createTestingAssignments
-      // callable, which enforces the matching rules.
+      // Assignments are created only by the `joinTestingAssignment` callable,
+      // which locks the tester's coins, writes the active claim and creates
+      // the cycle assignment in one transaction. The old push-matching
+      // callable that created assignments with nothing staked behind them is
+      // retired — see the header of functions/assignments.js.
       allow create: if false;
 
-      // The tester can flip the status to `waitingForVerification` once the
-      // server-maintained day count has actually reached the requirement.
-      // Everything else — daysCompleted, coinReward, the final move to
-      // completed — is server-authoritative.
-      allow update: if activeUser()
-        && resource.data.testerId == request.auth.uid
-        && onlyChanges(resource.data, request.resource.data, ['status', 'updatedAt'])
-        && request.resource.data.status == 'waitingForVerification'
-        && resource.data.status in ['ready', 'inProgress']
-        && resource.data.daysCompleted >= resource.data.daysRequired;
+      // NO CLIENT WRITES AT ALL.
+      //
+      // A tester used to be allowed one update: flipping `status` to
+      // `waitingForVerification` once the day count reached the requirement.
+      // The testing engine removed the need for it — recording the fourteenth
+      // qualifying day completes the commitment and returns the staked coins
+      // in one server transaction, so there is nothing left for a tester to
+      // ask for. With the need gone, the permission goes too.
+      //
+      // Every field on this document governs money or the clock that decides
+      // it: commitmentAmount (how much is at stake), cycle (which commitment),
+      // lockTxId and settlementTxId (which ledger entries moved the coins),
+      // qualifyingDays and daysCompleted (whether the requirement was met),
+      // timeZone / firstEligibleDayKey / lastEligibleDayKey / windowDays /
+      // windowEndsAt / creditedOutageDays (the deadline itself), and testerId /
+      // appId / developerId (whose coins). A client able to write any one of
+      // them could unlock coins it never earned back, move its own deadline,
+      // or forfeit someone else's stake.
+      //
+      // The pinned clock deserves a specific note: it is written exactly once,
+      // by the claim transaction, and never again by anything. Immutability is
+      // what makes it authoritative — a deadline that could be edited after the
+      // commitment started would not be a deadline.
+      allow update: if false;
 
+      // Deleting an assignment would strand its locked coins: the ledger entry
+      // and the wallet balance would survive with nothing left to settle
+      // against. Only the settlement paths may end a commitment.
       allow delete: if false;
+    }
+
+    // ---------- activeClaims -------------------------------------------
+
+    // At most one live commitment per (app, tester), id "{appId}__{testerId}".
+    //
+    // This document IS the concurrency guard for claiming: the join
+    // transaction writes it with `tx.create`, so two simultaneous claims for
+    // the same app collide and exactly one survives. It is also what stops a
+    // second commitment starting while one is live.
+    //
+    // Every client write is refused, and `delete` matters as much as `create`:
+    // a client that could delete its own claim could start a second commitment
+    // on the same app while the first still holds coins, or clear the guard
+    // that makes double-claiming impossible. The claim is removed only by the
+    // settlement paths, inside the same transaction that moves the coins.
+    match /activeClaims/{claimId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.testerId == request.auth.uid);
+      allow write: if false;
     }
 
     // ---------- testingLogs --------------------------------------------
@@ -352,52 +371,37 @@ service cloud.firestore {
     match /testingLogs/{logId} {
       // A tester may read their own logs; admins read them for verification.
       //
-      // `resource == null` covers a read of a log that doesn't exist yet. The
-      // client's check-in transaction reads the day's log document before
-      // writing it, and without this the rule dereferences a null `resource`,
-      // errors, and denies the whole transaction — rejecting every legitimate
-      // check-in.
-      //
-      // Trade-off: because log ids are deterministic, this lets someone who
-      // already knows an assignment id probe whether that day was logged. No
-      // document contents leak. Closing that oracle means moving the check-in
-      // behind a callable function, which is a later change.
+      // `resource == null` is no longer tolerated. It existed because the
+      // client's check-in transaction had to read the day's log before writing
+      // it, which turned deterministic log ids into an existence oracle:
+      // anyone who knew an assignment id could probe whether a given day was
+      // logged. The callable does that read with Admin SDK credentials now, so
+      // the allowance is gone and a lookup of a non-existent log is simply
+      // denied.
       allow read: if isAdmin()
-        || (signedIn() && (resource == null || resource.data.testerId == request.auth.uid));
+        || (signedIn() && resource.data.testerId == request.auth.uid);
 
-      // Four layers of protection:
-      //   1. Deterministic doc ID "{assignmentId}__{yyyy-MM-dd}" makes a
-      //      second create for the same day fail at the storage layer.
-      //   2. The rule refuses a create whose ID doesn't match its own
-      //      fields, so a client can't smuggle two logs into different IDs.
-      //   3. `date` must equal the day key derived from `request.time` —
-      //      the SERVER clock — so moving the device date forward no longer
-      //      buys extra testing days.
-      //   4. The referenced assignment must exist, belong to this tester,
-      //      and still be active.
+      // NO CLIENT WRITES. Testing days are recorded only by the
+      // `recordTestingDay` callable, running with Admin SDK credentials.
       //
-      // `createdAt` is checked against a tight tolerance window around
-      // `request.time`, not exact equality. Confirmed via the Rules
-      // Playground (real device data, every other clause verified true)
-      // that exact equality between a resolved `serverTimestamp()` sentinel
-      // and `request.time` can fail on sub-second precision — a known
-      // Firestore fragility, which is why Google's own rules cookbook
-      // recommends a tolerance window for this pattern instead of `==`.
-      // A tight window changes nothing about what this guards against: a
-      // client still cannot manufacture an arbitrary `createdAt` — day
-      // boundaries are ~86400s apart, so seconds of slack are not
-      // exploitable for the abuse this check exists to prevent.
-      allow create: if activeUser()
-        && request.resource.data.testerId == request.auth.uid
-        && onlyHas(request.resource.data, ['assignmentId', 'testerId', 'date', 'createdAt'])
-        && logId == request.resource.data.assignmentId + '__' + request.resource.data.date
-        && request.resource.data.date == serverDayKey()
-        && request.resource.data.createdAt > request.time - duration.value(30, 's')
-        && request.resource.data.createdAt < request.time + duration.value(30, 's')
-        && ownsActiveAssignment(request.resource.data.assignmentId);
-
-      // Logs are append-only.
-      allow update, delete: if false;
+      // This rule used to permit a client create, guarded by a `date` that had
+      // to equal a day key derived from `request.time`. That was sound against
+      // clock tampering, but it forced the testing day to roll over at UTC
+      // midnight, because rules cannot see a tester's timezone — an Indian
+      // tester's day flipped at 05:30 local. Moving the write server-side is
+      // what buys a real local-midnight boundary: the callable knows the
+      // assignment's PINNED IANA zone and derives the day itself.
+      //
+      // Closing the client path also closes two things the old comment here
+      // flagged as open: the read-before-write oracle below, and the
+      // possibility of a log existing without the matching progress update,
+      // since both now happen in one transaction.
+      //
+      // A testing log is worth 1/14th of a 50-coin commitment, so `delete` is
+      // refused as firmly as `create`: deleting a log would silently reduce a
+      // tester's progress, and deleting the fourteenth would strip evidence
+      // from a completed settlement.
+      allow write: if false;
     }
 
     // Anything not matched explicitly is denied. This is important:

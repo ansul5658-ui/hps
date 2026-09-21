@@ -104,7 +104,13 @@ data class TestAssignment(
     val assignedAtMillis: Long = 0L,
     val deadlineAtMillis: Long? = null,
     val daysRequired: Int = 14,
-    /** server-authoritative — recomputed from `testingLogs` by a Cloud Function */
+    /**
+     * server-authoritative — qualifying testing days recorded so far.
+     *
+     * Maintained by the `recordTestingDay` callable inside the same
+     * transaction as the log that earned it, and read straight off the
+     * assignment. The client never counts logs to derive this.
+     */
     val daysCompleted: Int = 0,
     /** server-authoritative — driven by tester actions + admin verification */
     val status: AssignmentStatus = AssignmentStatus.Ready,
@@ -118,16 +124,102 @@ data class TestAssignment(
      */
     val commitmentAmount: Int = 0,
     /**
-     * Last day the tester logged testing progress, formatted as `yyyy-MM-dd`
-     * in UTC — the one definition of "today" that the client and Firestore
-     * rules can both compute (see
-     * [com.apptesting.app.core.util.TimeProvider]). Used to enforce the "one
-     * log per calendar day per assignment" rule idempotently: a repeated tap
-     * on the same day is a no-op. Derived from the `testingLogs` collection;
-     * never mutated by the client via a copy() call.
+     * server-authoritative — which commitment cycle this is for the
+     * (app, tester) pair. 0 for a reward-era assignment with no cycle suffix.
+     *
+     * A tester may test the same app again after finishing, and each attempt
+     * stakes its own coins, so each gets its own assignment id and its own
+     * ledger entries. See `lib/commitments.js`.
+     */
+    val cycle: Int = 0,
+    /** server-authoritative — days the tester has to meet [daysRequired]. */
+    val windowDays: Int = 0,
+    /**
+     * server-authoritative — the ledger entry that locked this commitment.
+     *
+     * Non-null means coins are actually staked on this assignment. A
+     * reward-era assignment has none, which is exactly why settlement skips
+     * the wallet for those.
+     */
+    val lockTxId: String? = null,
+    /**
+     * server-authoritative — the ledger entry that returned or consumed the
+     * stake. Non-null means this commitment is settled and cannot move coins
+     * again.
+     */
+    val settlementTxId: String? = null,
+    /**
+     * server-authoritative — the IANA zone pinned to this commitment at claim.
+     *
+     * Authoritative for the whole lifecycle and never re-read from the device.
+     * Present here for display and for explaining the deadline to the tester;
+     * the client must never use it to decide whether a day counts.
+     */
+    val timeZone: String? = null,
+    /** server-authoritative — the first local day that can qualify. */
+    val firstEligibleDayKey: String? = null,
+    /** server-authoritative — the last local day that can qualify. */
+    val lastEligibleDayKey: String? = null,
+    /**
+     * server-authoritative — the last LOCAL day a qualifying testing day was
+     * recorded, formatted `yyyy-MM-dd` in [timeZone].
+     *
+     * Written by the server alongside the log itself. Display only — it no
+     * longer decides whether the check-in button is enabled, because answering
+     * that from a day key forced the client to work out what "today" was.
+     * [nextCheckInAtMillis] answers it instead. See [hasLoggedTodayAt].
      */
     val lastLoggedDayKey: String? = null,
+    /**
+     * server-authoritative — the instant today's check-in stops counting as
+     * "today", i.e. local midnight after [lastLoggedDayKey] in [timeZone].
+     *
+     * THE reason this is an instant and not a day key. Rendering "Logged
+     * today" from [lastLoggedDayKey] meant the client had to decide what
+     * "today" was, and it did so in UTC — so between 00:00 and 05:30 IST the
+     * server knew the day was logged while the button still looked available.
+     * Comparing two instants needs no timezone at all, so the device no longer
+     * holds an opinion that can disagree with the server.
+     *
+     * Null for an assignment with no check-in yet, and for one last written
+     * before this field existed. Both read as "not logged", which costs a
+     * round trip the server rejects idempotently — never a duplicate day.
+     */
+    val nextCheckInAtMillis: Long? = null,
 ) {
+    /** True when Testing Coins are actually staked on this assignment. */
+    val hasCommitment: Boolean get() = !lockTxId.isNullOrBlank()
+
+    /**
+     * Testing Coins to render as "committed" — 0 unless they are really locked.
+     *
+     * THE single definition every screen uses, so Home and Test Apps cannot
+     * drift apart on what counts as a stake. [commitmentAmount] falls back to
+     * the reward-era `coinReward` field when mapping an older document, so a
+     * pre-wallet assignment carries a 50 that was never taken from anyone.
+     * Showing it as committed would claim coins are at risk when they are not
+     * locked, cannot be forfeited and will not be returned. A lock ledger
+     * entry — [hasCommitment] — is the only evidence that a stake exists.
+     */
+    val displayedCommitmentAmount: Int get() = if (hasCommitment) commitmentAmount else 0
+
+    /**
+     * Has the tester already recorded a testing day for the current local day?
+     *
+     * Pure, and the single definition the UI uses. [nowMillis] is the device
+     * clock, which affects only what is rendered: a skewed clock costs a
+     * refused round trip in one direction and a stale "Logged today" in the
+     * other. The server re-derives the day and enforces one-per-local-day with
+     * a deterministic log id regardless of what this returns.
+     */
+    fun hasLoggedTodayAt(nowMillis: Long): Boolean {
+        val boundary = nextCheckInAtMillis ?: return false
+        return nowMillis < boundary
+    }
+
+    /** True once the stake has been returned or consumed. */
+    val isSettled: Boolean get() = !settlementTxId.isNullOrBlank()
+
     /** Convenience — derived from days rather than a duplicate percentage field. */
     val progressPercent: Int
         get() = if (daysRequired <= 0) 0 else (daysCompleted * 100 / daysRequired).coerceIn(0, 100)

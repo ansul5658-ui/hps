@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.apptesting.app.core.data.AppRepository
 import com.apptesting.app.core.data.AssignmentRepository
+import com.apptesting.app.core.data.ClaimAssignmentResult
 import com.apptesting.app.core.data.CoinRepository
 import com.apptesting.app.core.data.LogDayResult
 import com.apptesting.app.core.data.NotificationRepository
@@ -58,6 +59,24 @@ class TestAppsViewModel(
         time = TimeProvider.Default,
     )
 
+    /**
+     * One claim in flight at a time.
+     *
+     * A UI-level courtesy only. The server refuses a duplicate claim outright
+     * (the active-claim document is written with `tx.create`), so this prevents
+     * a pointless second round trip rather than providing the guarantee.
+     */
+    private val claiming = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Assignments with a check-in request in flight.
+     *
+     * A UI-level courtesy only. The server's deterministic log id and
+     * `tx.create` are what actually make a duplicate impossible; this just
+     * avoids a redundant round trip on a double tap.
+     */
+    private val checkingIn = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     private val filter = MutableStateFlow(TestFilter.All)
     private val _state = MutableStateFlow<TestAppsUiState>(TestAppsUiState.Loading)
     val state: StateFlow<TestAppsUiState> = _state.asStateFlow()
@@ -98,20 +117,80 @@ class TestAppsViewModel(
         }
     }
 
+    /**
+     * Record today's testing day on the server.
+     *
+     * Nothing is incremented locally. The day count, the completion and the
+     * returned coins all arrive through the Firestore listeners this screen
+     * already collects, so the UI shows what the server actually stored rather
+     * than an optimistic guess that could disagree with it.
+     *
+     * A duplicate tap is safe: the in-flight guard avoids a pointless second
+     * round trip, and the server treats a same-day repeat as a no-op anyway.
+     */
     fun onCheckIn(assignmentId: String) {
+        if (!checkingIn.add(assignmentId)) return
         viewModelScope.launch {
-            when (val result = assignments.recordDayOfTesting(assignmentId)) {
-                is LogDayResult.Logged -> Unit
-                LogDayResult.AlreadyLoggedToday ->
-                    _events.emit(TestAppsEvent.Message("You've already logged today for this app."))
-                is LogDayResult.Error ->
-                    _events.emit(TestAppsEvent.Message(result.message))
+            try {
+                when (val result = assignments.recordDayOfTesting(assignmentId)) {
+                    is LogDayResult.Logged ->
+                        if (result.completed) {
+                            _events.emit(
+                                TestAppsEvent.Message(
+                                    "Commitment complete — your Testing Coins have been returned.",
+                                ),
+                            )
+                        } else {
+                            _events.emit(
+                                TestAppsEvent.Message(
+                                    "Day ${result.daysCompleted} of ${result.daysRequired} recorded.",
+                                ),
+                            )
+                        }
+                    LogDayResult.AlreadyLoggedToday ->
+                        _events.emit(
+                            TestAppsEvent.Message("You've already logged today for this app."),
+                        )
+                    is LogDayResult.Error ->
+                        _events.emit(TestAppsEvent.Message(result.message))
+                }
+            } finally {
+                checkingIn.remove(assignmentId)
             }
         }
     }
 
-    fun onMarkComplete(assignmentId: String) {
-        viewModelScope.launch { assignments.requestCompletion(assignmentId) }
+
+    /**
+     * Commit Testing Coins to an app and claim a testing assignment.
+     *
+     * Deliberately does NOT adjust any balance locally. The wallet flow this
+     * screen already collects is the authority, so the chip and the row update
+     * when the server's write lands — not optimistically. Guessing here would
+     * show coins as committed even when the claim lost a race for the last 50.
+     */
+    fun onClaimAssignment(appId: String) {
+        if (!claiming.compareAndSet(false, true)) return
+        viewModelScope.launch {
+            try {
+                when (val result = assignments.claimAssignment(appId)) {
+                    is ClaimAssignmentResult.Claimed ->
+                        _events.emit(
+                            TestAppsEvent.Committed(appId, result.committedAmount),
+                        )
+                    ClaimAssignmentResult.AlreadyCommitted ->
+                        _events.emit(
+                            TestAppsEvent.Message("You're already testing this app."),
+                        )
+                    is ClaimAssignmentResult.InsufficientCoins ->
+                        _events.emit(TestAppsEvent.Message(result.message))
+                    is ClaimAssignmentResult.Error ->
+                        _events.emit(TestAppsEvent.Message(result.message))
+                }
+            } finally {
+                claiming.set(false)
+            }
+        }
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -176,6 +255,10 @@ class TestAppsViewModel(
         currentFilter: TestFilter,
     ): TestAppsUiState.Content {
         val today = time.todayKey()
+        // Quick Test cooldowns still key off a UTC day string, which is
+        // per-viewer display only. The commitment check-in deliberately does
+        // not: it compares instants. See `loggedToday` below.
+        val now = time.nowMillis()
 
         // Section 1 — Quick Tests. Pure, and unit tested in
         // QuickTestSelectionTest; this is presentation filtering only, and the
@@ -207,7 +290,18 @@ class TestAppsViewModel(
                     daysRequired = a?.daysRequired ?: DEFAULT_DAYS,
                     daysCompleted = a?.daysCompleted ?: 0,
                     status = a?.status,
-                    loggedToday = a?.lastLoggedDayKey == today,
+                    // Server-authoritative. The server stamps the instant
+                    // today's check-in expires, in the commitment's PINNED
+                    // zone; this only asks whether that instant has passed.
+                    // Comparing `lastQualifyingDayKey` against a UTC day key
+                    // used to put the client 5.5 hours out of step with the
+                    // server every night for Indian testers.
+                    loggedToday = a?.hasLoggedTodayAt(now) == true,
+                    // Only a real, locked commitment shows an amount. A
+                    // reward-era assignment staked nothing, so it shows 0
+                    // rather than implying coins are at risk.
+                    committedAmount = a?.displayedCommitmentAmount ?: 0,
+                    lastEligibleDayKey = a?.lastEligibleDayKey,
                 )
             }
         val visibleRows = when (currentFilter) {
@@ -251,4 +345,10 @@ sealed interface TestAppsEvent {
      * server's own remaining count so the confirmation never guesses.
      */
     data class QuickTestStarted(val appId: String, val remainingToday: Int) : TestAppsEvent
+
+    /**
+     * A commitment was made server-side. Carries the amount the SERVER
+     * committed, never a locally assumed one.
+     */
+    data class Committed(val appId: String, val amount: Int) : TestAppsEvent
 }

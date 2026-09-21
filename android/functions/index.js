@@ -22,6 +22,8 @@ const adminOps = require("./admin");
 const groups = require("./groups");
 const assignments = require("./assignments");
 const completion = require("./completion");
+const commitments = require("./commitments");
+const testingDays = require("./testingDays");
 const wallet = require("./wallet");
 const quickTests = require("./quickTests");
 
@@ -43,9 +45,30 @@ exports.adminReconcileWallet = wallet.adminReconcileWallet;
 exports.joinGroup = groups.joinGroup;
 exports.syncGroupMemberCount = groups.syncGroupMemberCount;
 
-// Testing assignments.
-exports.createTestingAssignments = assignments.createTestingAssignments;
-exports.syncAssignmentProgress = assignments.syncAssignmentProgress;
+// Testing assignments. `previewEligibleTesters` is READ-ONLY: it reports who
+// could claim an app and creates nothing. The old `createTestingAssignments`
+// callable, which pushed assignments onto testers without a coin commitment,
+// is gone — see the note at the top of assignments.js.
+exports.previewEligibleTesters = assignments.previewEligibleTesters;
+
+// Commitment lifecycle — claim locks coins, completion returns the SAME coins,
+// an expired short commitment forfeits them. No reward at any point.
+// `adminForfeitCommitment` is admin-only AND still refuses unless the window
+// has genuinely elapsed with the requirement unmet.
+exports.joinTestingAssignment = commitments.joinTestingAssignment;
+exports.adminForfeitCommitment = commitments.adminForfeitCommitment;
+
+// The 14-day testing engine. `recordTestingDay` is the ONLY writer of
+// `testingLogs` — rules refuse every client write to that collection — and it
+// completes the commitment, returning the staked coins, in the same
+// transaction as the fourteenth qualifying day.
+//
+// `syncAssignmentProgress` was retired here: it was a testingLogs trigger that
+// recomputed `qualifyingDays` from a count. With the check-in transaction
+// maintaining that field itself, a second writer would be a race with no
+// upside — and "qualifyingDays is server-authoritative" is only meaningful
+// with exactly one authority.
+exports.recordTestingDay = testingDays.recordTestingDay;
 
 // Quick Tests — discovery sessions, entirely outside the coin economy.
 exports.startQuickTest = quickTests.startQuickTest;

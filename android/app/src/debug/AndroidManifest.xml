@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG-ONLY manifest overlay.
+
+  Its single job is to attach the debug network security config, which permits
+  cleartext HTTP to loopback so a debug build can reach the local Firebase
+  Emulator Suite over an `adb reverse` tunnel.
+
+  The manifest merger applies this to debug builds only. The release build uses
+  src/main/AndroidManifest.xml unchanged and therefore keeps Android's default
+  "no cleartext" behaviour.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:replace="android:networkSecurityConfig" />
+</manifest>

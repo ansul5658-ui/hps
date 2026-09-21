@@ -1,7 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { selectTesters, assignmentIdFor } = require("../lib/matching");
+const { selectTesters } = require("../lib/matching");
+const { cycleAssignmentId } = require("../lib/commitments");
 
 function candidate(uid, overrides = {}) {
   return {
@@ -127,8 +128,17 @@ test("running twice over the same pool assigns nobody the second time", () => {
   assert.deepEqual(second.selected, []);
 });
 
-test("assignment ids are deterministic per app+tester", () => {
-  assert.equal(assignmentIdFor("app1", "userA"), "app1__userA");
-  assert.equal(assignmentIdFor("app1", "userA"), assignmentIdFor("app1", "userA"));
-  assert.notEqual(assignmentIdFor("app1", "userA"), assignmentIdFor("app1", "userB"));
+test("assignment ids are now cycle-scoped and minted only by the claim path", () => {
+  // `assignmentIdFor` used to live in lib/matching.js and produced
+  // `{appId}__{testerId}` — one assignment per pair, forever. It was deleted
+  // with push-matching: a tester may test the same app again and stake fresh
+  // coins, so identity must carry the cycle. There is deliberately no id
+  // generator left in this module, because minting an assignment id outside
+  // the coin-locking transaction is exactly what must not be possible.
+  assert.equal(require("../lib/matching").assignmentIdFor, undefined);
+  assert.equal(cycleAssignmentId("app1", "userA", 1), "app1__userA__c1");
+  assert.notEqual(
+    cycleAssignmentId("app1", "userA", 1),
+    cycleAssignmentId("app1", "userA", 2),
+  );
 });

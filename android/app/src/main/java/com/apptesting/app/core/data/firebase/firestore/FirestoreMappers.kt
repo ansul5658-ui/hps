@@ -157,10 +157,7 @@ internal fun parseGroupVisibility(raw: String?): GroupVisibility = when (raw) {
 // reflects check-ins immediately even without a CF running.
 // ---------------------------------------------------------------------------
 
-internal fun DocumentSnapshot.toAssignment(
-    daysCompleted: Int,
-    lastLoggedDayKey: String?,
-): TestAssignment = TestAssignment(
+internal fun DocumentSnapshot.toAssignment(): TestAssignment = TestAssignment(
     id = id,
     groupId = getString("groupId").orEmpty(), // optional legacy field
     appId = getString("appId").orEmpty(),
@@ -168,14 +165,31 @@ internal fun DocumentSnapshot.toAssignment(
     assignedAtMillis = timestampMillis("createdAt"),
     deadlineAtMillis = (get("deadline") as? Timestamp)?.toDate()?.time,
     daysRequired = getLong("daysRequired")?.toInt() ?: 14,
-    daysCompleted = daysCompleted,
+    // Server-authoritative. `qualifyingDays` is maintained by the testing
+    // engine in the same transaction as the log that earned it; `daysCompleted`
+    // is the reward-era name, read only as a fallback for older documents.
+    daysCompleted = (getLong("qualifyingDays") ?: getLong("daysCompleted"))?.toInt() ?: 0,
     status = parseAssignmentStatus(getString("status")),
     // `commitmentAmount` is what the server writes now. `coinReward` is the
     // reward-era field: assignments created before the wallet existed still
     // carry it, and reading it here keeps those records displaying a sensible
     // stake instead of 0. Nothing pays it out — see functions/completion.js.
     commitmentAmount = (getLong("commitmentAmount") ?: getLong("coinReward"))?.toInt() ?: 0,
-    lastLoggedDayKey = lastLoggedDayKey,
+    cycle = getLong("cycle")?.toInt() ?: 0,
+    windowDays = getLong("windowDays")?.toInt() ?: 0,
+    lockTxId = getString("lockTxId"),
+    settlementTxId = getString("settlementTxId"),
+    // The pinned commitment clock. Display only on the client — every one of
+    // these is written once by the claim transaction and never again.
+    timeZone = getString("timeZone"),
+    firstEligibleDayKey = getString("firstEligibleDayKey"),
+    lastEligibleDayKey = getString("lastEligibleDayKey"),
+    lastLoggedDayKey = getString("lastQualifyingDayKey"),
+    // The check-in boundary as an INSTANT, written by `recordTestingDay` in
+    // the assignment's pinned zone. Read as millis and compared against the
+    // device clock, so the client never parses a day key or names a timezone
+    // to decide whether today has been logged.
+    nextCheckInAtMillis = (get("nextCheckInAt") as? Timestamp)?.toDate()?.time,
 )
 
 internal fun AssignmentStatus.serialize(): String = when (this) {

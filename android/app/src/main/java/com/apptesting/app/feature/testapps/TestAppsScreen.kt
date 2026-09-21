@@ -77,6 +77,7 @@ import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.CoinWallet
+import com.apptesting.app.core.util.AppConfig
 
 /**
  * The Apps screen — two clearly separated discovery surfaces.
@@ -109,6 +110,9 @@ fun TestAppsScreen(
         viewModel.events.collect { event ->
             when (event) {
                 is TestAppsEvent.Message -> snackbar.showSnackbar(event.text)
+                is TestAppsEvent.Committed -> snackbar.showSnackbar(
+                    "Committed ${event.amount} Testing Coins — they come back when you finish.",
+                )
                 is TestAppsEvent.QuickTestStarted -> snackbar.showSnackbar(
                     if (event.remainingToday > 0) {
                         "Quick Test started — ${event.remainingToday} left today."
@@ -143,8 +147,8 @@ fun TestAppsScreen(
                     onSearchChange = { searchQuery = it },
                     onFilterChange = viewModel::setFilter,
                     onStartQuickTest = viewModel::onStartQuickTest,
+                    onClaim = viewModel::onClaimAssignment,
                     onCheckIn = viewModel::onCheckIn,
-                    onMarkComplete = viewModel::onMarkComplete,
                 )
             }
         }
@@ -236,8 +240,8 @@ private fun AppsContent(
     onSearchChange: (String) -> Unit,
     onFilterChange: (TestFilter) -> Unit,
     onStartQuickTest: (String) -> Unit,
+    onClaim: (String) -> Unit,
     onCheckIn: (String) -> Unit,
-    onMarkComplete: (String) -> Unit,
 ) {
     val filteredRows = remember(state.rows, searchQuery) {
         if (searchQuery.isBlank()) {
@@ -342,8 +346,9 @@ private fun AppsContent(
             items(filteredRows, key = { "ta_" + it.appId }) { row ->
                 TestAppCard(
                     row = row,
+                    availableCoins = state.wallet.available,
+                    onClaim = { onClaim(row.appId) },
                     onCheckIn = { row.assignmentId?.let(onCheckIn) },
-                    onMarkComplete = { row.assignmentId?.let(onMarkComplete) },
                 )
             }
         }
@@ -556,8 +561,9 @@ private fun filterLabel(f: TestFilter): String = when (f) {
 @Composable
 private fun TestAppCard(
     row: TestRow,
+    availableCoins: Int,
+    onClaim: () -> Unit,
     onCheckIn: () -> Unit,
-    onMarkComplete: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -649,14 +655,43 @@ private fun TestAppCard(
 
             Spacer(Modifier.height(20.dp))
 
+            if (row.committedAmount > 0) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CommittedChip(
+                        amount = row.committedAmount,
+                        settled = row.status == AssignmentStatus.Completed,
+                    )
+                    // The deadline, straight from the server's pinned window.
+                    // Shown as the date itself rather than "N days left":
+                    // counting down would mean computing the tester's local
+                    // day on the device, which is exactly what the pinned
+                    // timezone exists to avoid.
+                    if (row.lastEligibleDayKey != null &&
+                        row.status != AssignmentStatus.Completed
+                    ) {
+                        Text(
+                            text = "by ${row.lastEligibleDayKey}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
             ActionRow(
                 status = row.status,
                 loggedToday = row.loggedToday,
-                canMarkComplete = row.assignmentId != null &&
-                    row.status == AssignmentStatus.InProgress &&
-                    row.daysCompleted >= row.daysRequired,
+                // Disabling the button early is a courtesy, not the guarantee:
+                // the server re-checks the balance inside the transaction, so a
+                // stale wallet here costs a round trip, never a bad commitment.
+                canCommit = availableCoins >= AppConfig.DEFAULT_COMMITMENT_AMOUNT,
+                commitmentAmount = AppConfig.DEFAULT_COMMITMENT_AMOUNT,
+                onClaim = onClaim,
                 onCheckIn = onCheckIn,
-                onMarkComplete = onMarkComplete,
             )
         }
     }
@@ -705,65 +740,66 @@ private fun MetaBadge(
 private fun ActionRow(
     status: AssignmentStatus?,
     loggedToday: Boolean,
-    canMarkComplete: Boolean,
+    canCommit: Boolean,
+    commitmentAmount: Int,
+    onClaim: () -> Unit,
     onCheckIn: () -> Unit,
-    onMarkComplete: () -> Unit,
 ) {
     when (status) {
-        // No assignment exists for this app yet. Testers are still matched by
-        // the backend in this build — self-service joining and coin locking
-        // are a later batch — so there is nothing for the tester to press.
-        // Say so plainly rather than offering a button that does nothing.
+        // No commitment on this app yet. The button states the stake up front,
+        // because pressing it moves the user's coins — it must never read as a
+        // free action. The server decides the amount; this label reflects it
+        // rather than deciding it.
         null -> {
-            OutlinedButton(
-                onClick = {},
-                enabled = false,
+            Button(
+                onClick = onClaim,
+                enabled = canCommit,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp),
                 shape = MaterialTheme.shapes.large,
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.Schedule,
+                    imageVector = if (canCommit) Icons.Rounded.Savings else Icons.Rounded.Schedule,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("Awaiting assignment", fontWeight = FontWeight.Bold)
+                Text(
+                    if (canCommit) {
+                        "Commit $commitmentAmount coins"
+                    } else {
+                        "Need $commitmentAmount available coins"
+                    },
+                    fontWeight = FontWeight.Bold,
+                )
             }
         }
 
+        // One action, because there is only one. Recording the fourteenth
+        // qualifying day completes the commitment and returns the staked coins
+        // server-side, so the old paired "Complete" button had nothing left to
+        // request — and a button that asks for something already automatic is
+        // worse than no button.
         AssignmentStatus.Ready, AssignmentStatus.InProgress -> {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FilledTonalButton(
-                    onClick = onCheckIn,
-                    enabled = !loggedToday,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    shape = MaterialTheme.shapes.large,
-                ) {
-                    if (loggedToday) {
-                        Icon(
-                            imageVector = Icons.Rounded.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Logged today")
-                    } else {
-                        Text("Log today")
-                    }
-                }
-                Button(
-                    onClick = onMarkComplete,
-                    enabled = canMarkComplete,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    shape = MaterialTheme.shapes.large,
-                ) {
-                    Text("Complete", fontWeight = FontWeight.Bold)
+            FilledTonalButton(
+                onClick = onCheckIn,
+                enabled = !loggedToday,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = MaterialTheme.shapes.large,
+            ) {
+                if (loggedToday) {
+                    Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Logged today")
+                } else {
+                    Text("Log today's testing", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -856,6 +892,52 @@ private fun TestAppsSkeletonLoading() {
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * "50 committed" on an assignment that holds a live stake.
+ *
+ * Says committed, never earned or owed. Once the assignment completes the
+ * wording changes to returned, because at that point the coins are back in
+ * the tester's available balance and describing them as committed would be
+ * wrong.
+ */
+@Composable
+private fun CommittedChip(amount: Int, settled: Boolean) {
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = if (settled) {
+            MaterialTheme.colorScheme.surfaceVariant
+        } else {
+            MaterialTheme.colorScheme.tertiaryContainer
+        },
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Savings,
+                contentDescription = null,
+                tint = if (settled) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onTertiaryContainer
+                },
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = if (settled) "$amount returned" else "$amount committed",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (settled) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onTertiaryContainer
+                },
+            )
         }
     }
 }

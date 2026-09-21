@@ -3,6 +3,7 @@ package com.apptesting.app
 import android.app.Application
 import android.util.Log
 import com.apptesting.app.core.data.ServiceLocator
+import com.apptesting.app.core.data.firebase.FirebaseEmulator
 
 private const val TAG = "AUTH_DEBUG"
 
@@ -19,6 +20,9 @@ class AppTestingApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "[FLOW] App startup")
+        // Must run before anything touches a Firebase singleton. No-op unless
+        // this is a debug build explicitly pointed at local emulators.
+        FirebaseEmulator.wireIfConfigured()
         ServiceLocator.init(this)
     }
 }

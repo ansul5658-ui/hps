@@ -1,9 +1,12 @@
 package com.apptesting.app.core.data.firebase.firestore
 
 import com.apptesting.app.core.data.AssignmentRepository
+import com.apptesting.app.core.data.ClaimAssignmentResult
 import com.apptesting.app.core.data.LogDayResult
+import com.apptesting.app.core.data.firebase.functions.AppFunctions
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.TestAssignment
+import com.apptesting.app.core.util.AppConfig
 import com.apptesting.app.core.util.TimeProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
@@ -20,152 +23,141 @@ import kotlinx.coroutines.tasks.await
  * Firestore-backed [AssignmentRepository].
  *
  * ### Data model
- *   * `testingAssignments/{assignmentId}` per spec.
- *   * `testingLogs/{assignmentId}__{yyyy-MM-dd}` — deterministic ID keyed by
- *     assignment + local calendar day. Because the ID is deterministic, a
- *     duplicate `create` inside the same day fails at the storage layer
- *     regardless of client-side state; the security rules are the second
- *     line of defense, not the first.
+ *   * `testingAssignments/{appId}__{testerId}__c{cycle}` — one per commitment
+ *     cycle. Carries the stake, the pinned IANA timezone and the derived
+ *     18-day window. Every field is server-written; rules refuse all client
+ *     writes.
+ *   * `testingLogs/{assignmentId}__{yyyy-MM-dd}` — one per qualifying local
+ *     day, created ONLY by the `recordTestingDay` callable.
  *
- * ### daysCompleted
- * `testingAssignments.daysCompleted` is treated as server-authoritative and
- * will be maintained by a Cloud Function later. Until then the repository
- * derives daysCompleted on the fly from the logs collection so the UI
- * reflects check-ins immediately.
+ * ### Progress
+ * `qualifyingDays` on the assignment is authoritative and is maintained by the
+ * server in the same transaction as the log. This repository reads it; it does
+ * not count logs, and it does not compute a day key.
  *
- * ### Idempotent "log today"
- * A Firestore transaction reads the deterministic log doc; if it already
- * exists we return [LogDayResult.AlreadyLoggedToday] and write nothing.
- * Otherwise we create the log doc inside the same transaction, so a race
- * that would let two writes both see "no log yet" is caught by Firestore's
- * transaction retry logic.
+ * ### Writes
+ * There are none. Claiming a commitment and recording a testing day are both
+ * callable Cloud Functions — see the notes on each method below.
  */
 internal class FirestoreAssignmentRepository(
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val time: TimeProvider = TimeProvider.Default,
+    private val functions: AppFunctions = AppFunctions(),
 ) : AssignmentRepository {
 
     private val assignments = firestore.collection("testingAssignments")
-    private val logs = firestore.collection("testingLogs")
 
-    override fun observeAssignmentsForUser(userId: String): Flow<List<TestAssignment>> {
-        val assignmentsFlow = assignments.whereEqualTo("testerId", userId).snapshots()
-        val logsFlow = logs.whereEqualTo("testerId", userId).snapshots()
-        return combine(assignmentsFlow, logsFlow) { aSnap, lSnap ->
-            val logsByAssignment: Map<String, List<Pair<String, Long>>> =
-                lSnap.documents
-                    .mapNotNull { doc ->
-                        val aid = doc.getString("assignmentId") ?: return@mapNotNull null
-                        val date = doc.getString("date").orEmpty()
-                        val createdAt = doc.timestampMillis("createdAt")
-                        aid to (date to createdAt)
-                    }
-                    .groupBy({ it.first }, { it.second })
+    /**
+     * Observe this tester's assignments, with SERVER-derived progress.
+     *
+     * This used to stream `testingLogs` alongside the assignments and count
+     * them on the device to produce `daysCompleted`. That is gone. The testing
+     * engine maintains `qualifyingDays` and `lastQualifyingDayKey` on the
+     * assignment inside the same transaction that writes the log, so the
+     * authoritative numbers are already on the document — counting a snapshot
+     * here would be a second, weaker implementation of progress that could
+     * disagree with the one that actually decides whether 50 coins come back.
+     *
+     * Dropping the log listener also removes a whole query from every screen
+     * that shows assignments.
+     */
+    override fun observeAssignmentsForUser(userId: String): Flow<List<TestAssignment>> =
+        assignments.whereEqualTo("testerId", userId).snapshots()
+            .map { snap -> snap.documents.map { it.toAssignment() } }
 
-            aSnap.documents.map { doc ->
-                val logsForThis = logsByAssignment[doc.id].orEmpty()
-                val daysCompleted = logsForThis.size
-                val lastLoggedDayKey = logsForThis
-                    .maxByOrNull { it.second }?.first
-                    ?.takeIf { it.isNotBlank() }
-                doc.toAssignment(daysCompleted, lastLoggedDayKey)
+    /**
+     * Claim an assignment and commit Testing Coins to it.
+     *
+     * A single callable, with `appId` as the only input. The stake, the tester,
+     * the cycle, the assignment id and all three balance deltas are decided
+     * server-side inside one transaction.
+     *
+     * Deliberately does NOT touch the wallet locally. There is no optimistic
+     * subtraction here and there must never be one: the balance the user sees
+     * comes from the `users/{uid}/wallet/balance` listener, so it changes when
+     * the server says it changed and not a moment before. A local guess would
+     * show coins as committed even when the claim lost a race.
+     */
+    override suspend fun claimAssignment(appId: String): ClaimAssignmentResult {
+        auth.currentUser?.uid
+            ?: return ClaimAssignmentResult.Error("Sign in to commit to a test.")
+        return try {
+            val result = functions.call("joinTestingAssignment", mapOf("appId" to appId))
+            ClaimAssignmentResult.Claimed(
+                assignmentId = result["assignmentId"] as? String ?: "",
+                committedAmount = (result["commitmentAmount"] as? Number)?.toInt() ?: 0,
+                cycle = (result["cycle"] as? Number)?.toInt() ?: 0,
+            )
+        } catch (e: IllegalStateException) {
+            // AppFunctions maps the callable's code to a human message; the
+            // server's own wording is the best thing to show here.
+            val message = e.message.orEmpty()
+            when {
+                message.contains("already have an active commitment", ignoreCase = true) ||
+                    message.contains("already have an unfinished", ignoreCase = true) ->
+                    ClaimAssignmentResult.AlreadyCommitted
+                message.contains("Testing Coins", ignoreCase = true) ->
+                    ClaimAssignmentResult.InsufficientCoins(
+                        required = AppConfig.DEFAULT_COMMITMENT_AMOUNT,
+                        message = message,
+                    )
+                else -> ClaimAssignmentResult.Error(
+                    message.ifBlank { "Couldn't commit to this test." },
+                )
             }
         }
     }
 
-    override suspend fun requestCompletion(assignmentId: String): Result<Unit> = runCatching {
-        auth.currentUser?.uid ?: throw IllegalStateException("Must be signed in.")
-        // Rules enforce that only the tester may set this and that only the
-        // `status` + `updatedAt` fields change; the tester check lives on
-        // the server, not here.
-        assignments.document(assignmentId).set(
-            mapOf(
-                "status" to AssignmentStatus.WaitingForVerification.serialize(),
-                "updatedAt" to FieldValue.serverTimestamp(),
-            ),
-            SetOptions.merge(),
-        ).await()
-        // Note: we intentionally do NOT touch daysCompleted here. The admin
-        // (or a future Cloud Function) verifies the log count is sufficient
-        // before awarding Coins.
-    }
-
+    /**
+     * Record today's testing day through the server.
+     *
+     * A single callable with `assignmentId` as the only input. Everything that
+     * decides whether the day counts is derived server-side: the day key comes
+     * from the server clock and the assignment's PINNED IANA timezone, the
+     * progress count is maintained inside the same transaction, and the
+     * fourteenth day completes the commitment and returns the staked coins.
+     *
+     * WHY THERE IS NO LOCAL WRITE AND NO LOCAL DAY KEY
+     * This used to run a client Firestore transaction that created the log
+     * itself, using a UTC day key both sides could agree on. Security rules now
+     * refuse every client write to `testingLogs`, and the day key is the
+     * server's — which is what lets the boundary be real local midnight rather
+     * than 05:30 IST. Computing a day key here would at best duplicate the
+     * server and at worst disagree with it, so the client no longer has one.
+     *
+     * Duplicate taps are safe: the server reports a same-day repeat as an
+     * idempotent no-op rather than an error.
+     */
     override suspend fun recordDayOfTesting(assignmentId: String): LogDayResult {
-        android.util.Log.d("CHECKIN_DEBUG", "[CHECKIN] recordDayOfTesting called for assignmentId=$assignmentId")
-        val uid = auth.currentUser?.uid
+        auth.currentUser?.uid
             ?: return LogDayResult.Error("Must be signed in to log a testing day.")
-        val today = time.todayKey()
-        val logDocId = deterministicLogId(assignmentId, today)
-        android.util.Log.d("CHECKIN_DEBUG", "[CHECKIN] uid=$uid today=$today logDocId=$logDocId")
-        val logRef = logs.document(logDocId)
-        val assignmentRef = assignments.document(assignmentId)
-
         return try {
-            firestore.runTransaction { tx ->
-                val existing = tx.get(logRef)
-                if (existing.exists()) {
-                    return@runTransaction TxOutcome.AlreadyLogged
-                }
-                val assignment = tx.get(assignmentRef)
-                if (!assignment.exists()) {
-                    return@runTransaction TxOutcome.NotFound
-                }
-                val testerId = assignment.getString("testerId")
-                if (testerId != uid) {
-                    return@runTransaction TxOutcome.NotYours
-                }
-                val daysRequired = assignment.getLong("daysRequired")?.toInt() ?: DEFAULT_DAYS
-                tx.set(
-                    logRef,
-                    mapOf(
-                        "assignmentId" to assignmentId,
-                        "testerId" to uid,
-                        "date" to today,
-                        "createdAt" to FieldValue.serverTimestamp(),
-                    ),
-                )
-                TxOutcome.Logged(daysRequired)
-            }.await().also {
-                android.util.Log.d("CHECKIN_DEBUG", "[CHECKIN] transaction outcome=$it")
-            }.toLogDayResult()
-        } catch (e: FirebaseFirestoreException) {
-            android.util.Log.e("CHECKIN_DEBUG", "[CHECKIN] FirebaseFirestoreException code=${e.code} message=${e.message}", e)
-            // ALREADY_EXISTS surfaces here if two concurrent transactions
-            // both saw "no log" and only one committed; treat as idempotent.
-            if (e.code == FirebaseFirestoreException.Code.ALREADY_EXISTS ||
-                e.code == FirebaseFirestoreException.Code.ABORTED
-            ) {
+            val result = functions.call(
+                "recordTestingDay",
+                mapOf("assignmentId" to assignmentId),
+            )
+            val recorded = result["recorded"] as? Boolean ?: false
+            val qualifyingDays = (result["qualifyingDays"] as? Number)?.toInt() ?: 0
+            val daysRequired = (result["daysRequired"] as? Number)?.toInt() ?: DEFAULT_DAYS
+            if (!recorded) {
                 LogDayResult.AlreadyLoggedToday
             } else {
-                LogDayResult.Error(e.message ?: "Failed to log the day.")
+                LogDayResult.Logged(
+                    daysCompleted = qualifyingDays,
+                    daysRequired = daysRequired,
+                    completed = result["completed"] as? Boolean ?: false,
+                )
             }
-        } catch (t: Throwable) {
-            android.util.Log.e("CHECKIN_DEBUG", "[CHECKIN] Throwable class=${t.javaClass.name} message=${t.message}", t)
-            LogDayResult.Error(t.message ?: "Failed to log the day.")
+        } catch (e: IllegalStateException) {
+            // AppFunctions turns a callable failure into a human message; the
+            // server's own wording ("Your first testing day starts tomorrow",
+            // "This commitment's testing window has closed") is the best thing
+            // to show, so it is passed through rather than replaced.
+            LogDayResult.Error(e.message.orEmpty().ifBlank { "Couldn't record today." })
         }
     }
 
-    private fun deterministicLogId(assignmentId: String, dayKey: String): String =
-        "${assignmentId}__$dayKey"
-
-    private sealed interface TxOutcome {
-        object AlreadyLogged : TxOutcome
-        object NotFound : TxOutcome
-        object NotYours : TxOutcome
-        data class Logged(val daysRequired: Int) : TxOutcome
-    }
-
-    private fun TxOutcome.toLogDayResult(): LogDayResult = when (this) {
-        TxOutcome.AlreadyLogged -> LogDayResult.AlreadyLoggedToday
-        TxOutcome.NotFound -> LogDayResult.Error("Assignment not found.")
-        TxOutcome.NotYours -> LogDayResult.Error("This assignment isn't yours.")
-        // We don't know the new post-log count without a follow-up read.
-        // The observing Flow will re-emit the correct total from the logs
-        // listener; the ViewModel does not consume Logged's counts for
-        // display, so we pass a truthful lower bound (1) + daysRequired.
-        is TxOutcome.Logged -> LogDayResult.Logged(daysCompleted = 1, daysRequired = daysRequired)
-    }
 
     private companion object {
         const val DEFAULT_DAYS = 14

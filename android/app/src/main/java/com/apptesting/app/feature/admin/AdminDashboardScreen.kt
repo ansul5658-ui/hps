@@ -499,11 +499,13 @@ private fun AppCard(app: AppSubmission, viewModel: AdminDashboardViewModel) {
                         }
                     }
                     AppApprovalStatus.Approved -> {
-                        Button(
-                            onClick = { viewModel.assignTesters(app.id) },
+                        // Read-only. Testers claim tests themselves and stake
+                        // coins; the console cannot commit anyone.
+                        OutlinedButton(
+                            onClick = { viewModel.previewEligibleTesters(app.id) },
                             modifier = Modifier.weight(1f).height(38.dp),
                         ) {
-                            Text("Assign testers", style = MaterialTheme.typography.labelMedium)
+                            Text("Eligible testers", style = MaterialTheme.typography.labelMedium)
                         }
                         OutlinedButton(
                             onClick = { viewModel.setAppStatus(app.id, AppApprovalStatus.Archived) },

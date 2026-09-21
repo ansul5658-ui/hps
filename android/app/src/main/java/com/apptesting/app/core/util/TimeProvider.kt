@@ -8,24 +8,20 @@ import java.util.TimeZone
 /**
  * Testable clock plus the app's canonical "day key" format.
  *
- * The day key is `yyyy-MM-dd` in **UTC**. It is the unit of idempotency for
- * anything that must happen "at most once per calendar day" — most importantly
- * [com.apptesting.app.core.data.AssignmentRepository.recordDayOfTesting].
+ * The day key is `yyyy-MM-dd` in **UTC**.
  *
- * WHY UTC AND NOT THE DEVICE TIMEZONE
- * The key the client computes is not trusted. Firestore rules re-derive the
- * same string from `request.time` — the server clock — and reject any
- * `testingLogs` create whose `date` doesn't match. That check is only possible
- * because both sides agree on a single, timezone-free definition of "today":
- * rules have no access to the device's timezone. Moving the device date
- * forward now produces a PERMISSION_DENIED instead of an extra testing day.
+ * WHAT THIS IS *NOT* USED FOR ANY MORE
+ * It is no longer the testing-day boundary. A qualifying testing day is a
+ * LOCAL calendar day in the IANA timezone pinned to the assignment, and it is
+ * derived entirely on the server by the `recordTestingDay` callable — the
+ * client neither computes nor sends a day key for a check-in. The known
+ * trade-off this header used to describe (the day flipping at 05:30 IST) is
+ * gone with it.
  *
- * KNOWN TRADE-OFF
- * The testing day therefore rolls over at UTC midnight rather than local
- * midnight. A tester far from UTC sees the day flip mid-evening or mid-morning.
- * Making the boundary local-timezone-aware again requires the server to learn
- * and pin each tester's zone (a Cloud Function writing the log on the user's
- * behalf), which is deliberately out of scope for this batch.
+ * What remains is the per-viewer, non-authoritative uses: Quick Test cooldown
+ * display and anything else that just needs a stable "today" string for the
+ * UI. A tampered device clock changes what those render and nothing else,
+ * because the server re-derives every rule it actually enforces.
  */
 interface TimeProvider {
     fun nowMillis(): Long

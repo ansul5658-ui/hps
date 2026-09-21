@@ -85,24 +85,34 @@ class AdminDashboardViewModel(
         }
     }
 
-    /** Re-run tester matching for an already approved app. */
-    fun assignTesters(appId: String) {
+    /**
+     * Report how many testers are eligible to claim an approved app.
+     *
+     * Read-only. Testers are no longer assigned by the console — they claim a
+     * test themselves and stake Testing Coins on it. The wording below says
+     * "could claim" rather than "assigned" precisely because nothing was
+     * assigned; claiming a real obligation on someone's behalf is exactly what
+     * the commitment model removed.
+     */
+    fun previewEligibleTesters(appId: String) {
         viewModelScope.launch {
-            val result = admin.assignTesters(appId)
+            val result = admin.previewEligibleTesters(appId)
             result.fold(
-                onSuccess = { created ->
+                onSuccess = { eligible ->
                     _events.emit(
                         AdminEvent.Message(
-                            when (created) {
-                                0 -> "No new testers were eligible right now."
-                                1 -> "Assigned 1 tester."
-                                else -> "Assigned $created testers."
+                            when (eligible) {
+                                0 -> "No testers are eligible to claim this app right now."
+                                1 -> "1 tester could claim this app."
+                                else -> "$eligible testers could claim this app."
                             },
                         ),
                     )
                 },
                 onFailure = { error ->
-                    _events.emit(AdminEvent.Message(error.message ?: "Couldn't assign testers."))
+                    _events.emit(
+                        AdminEvent.Message(error.message ?: "Couldn't check eligible testers."),
+                    )
                 },
             )
         }

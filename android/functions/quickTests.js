@@ -78,7 +78,7 @@ function millisOf(timestamp) {
 /**
  * Start a Quick Test, atomically.
  *
- * Exported separately from the callable — the same split `runMatching` and
+ * Exported separately from the callable — the same split `runClaimCommitment` and
  * `runCompletionVerification` use — so the path can be exercised against the
  * emulator without the Functions runtime.
  *

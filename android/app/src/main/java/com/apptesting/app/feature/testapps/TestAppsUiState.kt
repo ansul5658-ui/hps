@@ -59,8 +59,30 @@ data class TestRow(
     val daysRequired: Int,
     val daysCompleted: Int,
     val status: AssignmentStatus?,
-    /** True when the tester has already logged testing progress for the current calendar day. */
+    /**
+     * True when the tester has already recorded a testing day for the current
+     * LOCAL day, as the server defines it.
+     *
+     * Derived from the server-stamped check-in boundary instant, never from a
+     * day key computed on the device — see `TestAssignment.hasLoggedTodayAt`.
+     */
     val loggedToday: Boolean,
+    /**
+     * Testing Coins STAKED on this assignment, 0 when there is no commitment.
+     *
+     * Displayed as "committed", never as a reward: completing returns these
+     * same coins rather than adding any.
+     */
+    val committedAmount: Int = 0,
+    /**
+     * The server's last eligible local day (`yyyy-MM-dd`), or null for an
+     * assignment with no pinned window.
+     *
+     * Rendered verbatim. The client deliberately does not compute how many
+     * days remain from it — that arithmetic belongs to the server, which
+     * already returns progress on every check-in.
+     */
+    val lastEligibleDayKey: String? = null,
 ) {
     val progress: Float
         get() = if (daysRequired <= 0) 0f else daysCompleted.toFloat() / daysRequired

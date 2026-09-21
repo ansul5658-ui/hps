@@ -181,7 +181,10 @@ class HomeViewModel(
                     status = a.status,
                     daysCompleted = a.daysCompleted,
                     daysRequired = a.daysRequired,
-                    commitmentAmount = a.commitmentAmount,
+                    // The SAME rule Test Apps renders by, shared rather than
+                    // repeated: a reward-era assignment staked nothing, so it
+                    // must not appear here as a live 50-coin commitment.
+                    commitmentAmount = a.displayedCommitmentAmount,
                 )
             }
         return HomeUiState.Content(

@@ -1,17 +1,25 @@
 /**
- * Replicates the exact Firestore sequence the Android client performs, rather
- * than a simplified version of it.
+ * Replicates the exact Firestore sequence the Android client USED to perform,
+ * and proves every step of it is now refused.
  *
- * FirestoreAssignmentRepository.recordDayOfTesting runs a transaction that:
- *   1. reads the (usually non-existent) log document,
- *   2. reads the assignment,
- *   3. creates the log with a server timestamp.
+ * `FirestoreAssignmentRepository.recordDayOfTesting` once ran a transaction
+ * that read the (usually non-existent) log document, read the assignment, then
+ * created the log with a server timestamp. This file existed to prove that
+ * whole path worked end to end against the real rules, because two of its
+ * steps were fragile: a read rule that dereferenced a null `resource`, and a
+ * `createdAt` tolerance window for a sentinel resolved at commit time.
  *
- * Both steps 1 and 3 are places where a rule can reject a legitimate check-in:
- * a read rule that dereferences `resource` breaks on a missing document, and a
- * `createdAt` tolerance-window check has to hold for a sentinel resolved at
- * commit time (exact equality was tried first and is fragile in production —
- * see firestore.rules). This file proves the whole path works end to end.
+ * The testing engine moved that write to the `recordTestingDay` callable, so
+ * the day boundary could follow the assignment's pinned IANA timezone instead
+ * of UTC. The client sequence is therefore dead — and this file now proves it
+ * is dead rather than deleting the coverage. That distinction matters: a
+ * reintroduced client write path would restore the UTC boundary and the
+ * existence oracle silently, and these tests are what would catch it.
+ *
+ * The behaviour those steps guarded (one day per local date, no future days,
+ * no backdating, suspended testers refused) did not go away — it moved to
+ * functions/test/testingDays.test.js and its emulator counterpart, where it is
+ * tested against the real zone-aware clock.
  */
 
 const test = require("node:test");
@@ -25,6 +33,7 @@ const {
 } = require("@firebase/rules-unit-testing");
 const {
   doc,
+  getDoc,
   setDoc,
   runTransaction,
   serverTimestamp,
@@ -101,32 +110,45 @@ function checkIn(db, { assignmentId, testerId, dayKey }) {
   });
 }
 
-test("the client's real transactional check-in succeeds", async () => {
+test("the old client transactional check-in is refused end to end", async () => {
+  // The exact sequence, with a perfectly well-formed payload: right tester,
+  // right deterministic id, today's date, a real server timestamp. It
+  // satisfied every clause of the rule that used to exist, and it is refused,
+  // because `testingLogs` has no client write path at all now.
   const db = testEnv.authenticatedContext("alice").firestore();
-  await assertSucceeds(
+  await assertFails(
     checkIn(db, { assignmentId: "app1__alice", testerId: "alice", dayKey: todayKey() }),
   );
 });
 
-test("a second check-in on the same day is a no-op, not a second log", async () => {
+test("a repeated attempt is refused too, not silently accepted", async () => {
   const db = testEnv.authenticatedContext("alice").firestore();
   const args = { assignmentId: "app1__alice", testerId: "alice", dayKey: todayKey() };
-  await assertSucceeds(checkIn(db, args));
-  // The transaction short-circuits on the existing doc and writes nothing,
-  // so this resolves without tripping the rules at all.
-  await assertSucceeds(checkIn(db, args));
+  await assertFails(checkIn(db, args));
+  await assertFails(checkIn(db, args));
 });
 
-test("a forward-dated transactional check-in is still rejected", async () => {
+test("a forward-dated client check-in is still rejected", async () => {
+  // Was rejected by the `date == serverDayKey()` clause; is now rejected
+  // because no client create is possible. Same outcome, stronger reason.
   const db = testEnv.authenticatedContext("alice").firestore();
   await assertFails(
     checkIn(db, { assignmentId: "app1__alice", testerId: "alice", dayKey: todayKey(1) }),
   );
 });
 
-test("a suspended tester's transactional check-in is rejected", async () => {
+test("a suspended tester's client check-in is still rejected", async () => {
   const db = testEnv.authenticatedContext("banned").firestore();
   await assertFails(
     checkIn(db, { assignmentId: "app1__banned", testerId: "banned", dayKey: todayKey() }),
   );
+});
+
+test("the existence oracle is closed: a missing log cannot be probed", async () => {
+  // Deterministic log ids used to let anyone who knew an assignment id read a
+  // non-existent log and learn whether that day had been recorded. The read
+  // rule tolerated `resource == null` only because the client transaction had
+  // to read before writing. With the write gone, so is the allowance.
+  const db = testEnv.authenticatedContext("alice").firestore();
+  await assertFails(getDoc(doc(db, `testingLogs/app1__alice__${todayKey()}`)));
 });

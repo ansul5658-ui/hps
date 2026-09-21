@@ -66,6 +66,57 @@ const DEFAULT_COMMITMENT_AMOUNT = 50;
 const MAX_COMMITMENT_AMOUNT = 500;
 
 /**
+ * Qualifying testing days a commitment must reach to settle successfully.
+ *
+ * Distinct from DEFAULT_DAYS_REQUIRED only in name: this is the number the
+ * settlement path checks, and it is snapshotted onto the assignment at claim
+ * time so changing the constant never moves the goalposts for a commitment
+ * already in flight.
+ */
+const COMMITMENT_DAYS_REQUIRED = 14;
+
+/**
+ * Calendar days a tester has to reach COMMITMENT_DAYS_REQUIRED.
+ *
+ * Deliberately longer than the requirement (18 > 14) so an ordinary missed day
+ * is recoverable. Forfeiture is only possible after this window has actually
+ * elapsed on the SERVER clock - see `checkForfeitEligible`.
+ */
+const COMMITMENT_WINDOW_DAYS = 18;
+
+/**
+ * IANA timezone pinned to a commitment when the tester has not supplied one.
+ *
+ * India-first by deliberate choice, consistent with the rest of the project:
+ * functions deploy to `asia-south2`, the commitment is denominated as a 50
+ * rupee stake, and the official testing group is an Indian community. Using
+ * the SERVER's zone would be wrong (it is UTC in production and could change
+ * with a region move), and using UTC would roll a tester's day over at 05:30
+ * local, which is both confusing and slightly punitive.
+ *
+ * This is a documented default, not a guess: the assignment records which
+ * source its zone came from, so a commitment pinned by fallback is
+ * distinguishable from one the tester chose.
+ */
+const DEFAULT_COMMITMENT_TIMEZONE = "Asia/Kolkata";
+
+/** How the pinned timezone was decided. Stored for auditability. */
+const TIMEZONE_SOURCE_TESTER = "tester";
+const TIMEZONE_SOURCE_DEFAULT = "default";
+
+/** Collection holding at most one live commitment per (app, tester). */
+const ACTIVE_CLAIMS_COLLECTION = "activeClaims";
+
+/**
+ * Assignment statuses from which no further settlement is possible.
+ *
+ * Reaching one of these is what releases the active claim. Settling twice is
+ * prevented structurally (deterministic ledger ids + `tx.create`), but this
+ * list is the cheap first check.
+ */
+const TERMINAL_ASSIGNMENT_STATUSES = ["completed", "failed", "missed", "cancelled"];
+
+/**
  * Ceiling on one admin play-money grant.
  *
  * Pre-payment pilot only. Deliberately small: this mints spendable balance
@@ -204,6 +255,13 @@ module.exports = {
   DEFAULT_DAYS_REQUIRED,
   DEFAULT_COMMITMENT_AMOUNT,
   MAX_COMMITMENT_AMOUNT,
+  COMMITMENT_DAYS_REQUIRED,
+  COMMITMENT_WINDOW_DAYS,
+  ACTIVE_CLAIMS_COLLECTION,
+  DEFAULT_COMMITMENT_TIMEZONE,
+  TIMEZONE_SOURCE_TESTER,
+  TIMEZONE_SOURCE_DEFAULT,
+  TERMINAL_ASSIGNMENT_STATUSES,
   MAX_ADMIN_GRANT_AMOUNT,
   WALLET_SCHEMA_VERSION,
   WALLET_DOC_ID,

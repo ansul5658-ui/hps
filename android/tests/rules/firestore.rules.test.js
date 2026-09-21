@@ -360,15 +360,23 @@ test("Case A: a user with no isSuspended field can still submit an app", async (
   );
 });
 
-test("Case A: a user with no isSuspended field can still log a testing day", async () => {
+test("Case A: a user with no isSuspended field is denied a log write, not errored", async () => {
+  // This used to assert the write SUCCEEDED: a client could create its own
+  // testing log, and the point was that a missing `isSuspended` did not make
+  // the rule throw. Testing logs are now server-written only, so the write is
+  // refused — but the reason must still be a clean denial rather than a rules
+  // evaluation error, which is what this keeps checking.
   const db = asUser("nofields");
   const day = todayKey();
-  await assertSucceeds(
+  await assertFails(
     setDoc(
       doc(db, `testingLogs/app1__nofields__${day}`),
       { assignmentId: "app1__nofields", testerId: "nofields", date: day, createdAt: serverTimestamp() },
     ),
   );
+  // The same user can still READ their own documents, which is what proves
+  // the denial came from the write rule and not from a broken helper.
+  await assertSucceeds(getDoc(doc(db, "users/nofields")));
 });
 
 test("Case B: a user with no role field is not treated as admin", async () => {
@@ -463,9 +471,14 @@ test("a tester cannot claim completion before the required days are logged", asy
   );
 });
 
-test("a tester can request verification once the server-counted days are met", async () => {
+test("a tester can no longer request verification — completion is automatic", async () => {
+  // This used to be the one permitted client write on an assignment. The
+  // testing engine removed the need for it: recording the fourteenth
+  // qualifying day completes the commitment and returns the staked coins in
+  // one server transaction, so there is nothing left to request. With the need
+  // gone, the permission went too.
   const db = asUser("alice");
-  await assertSucceeds(
+  await assertFails(
     updateDoc(doc(db, "testingAssignments/done__alice"), {
       status: "waitingForVerification",
       updatedAt: serverTimestamp(),
@@ -512,10 +525,14 @@ function logPayload(assignmentId, testerId, dayKey) {
   return { assignmentId, testerId, date: dayKey, createdAt: serverTimestamp() };
 }
 
-test("a tester can log today against their own active assignment", async () => {
+test("a tester cannot write a testing log, even a perfectly well-formed one", async () => {
+  // The strongest form of the check: this payload satisfied every clause of
+  // the old create rule — right tester, right id, today's date, a server
+  // timestamp — and it is still refused, because the collection has no client
+  // write path at all now. `recordTestingDay` is the only door.
   const db = asUser("alice");
   const day = todayKey();
-  await assertSucceeds(
+  await assertFails(
     setDoc(doc(db, `testingLogs/app1__alice__${day}`), logPayload("app1__alice", "alice", day)),
   );
 });
@@ -542,11 +559,14 @@ test("a device clock set backward cannot backfill a missed day", async () => {
   );
 });
 
-test("the same day cannot be logged twice for one assignment", async () => {
+test("a client cannot log a day once, let alone twice", async () => {
+  // Same-day idempotency is now enforced server-side by a deterministic log id
+  // plus `tx.create` (see functions/test-emulator/testingDays.concurrency).
+  // At the rules layer the simpler fact holds: neither attempt is permitted.
   const db = asUser("alice");
   const day = todayKey();
   const ref = doc(db, `testingLogs/app1__alice__${day}`);
-  await assertSucceeds(setDoc(ref, logPayload("app1__alice", "alice", day)));
+  await assertFails(setDoc(ref, logPayload("app1__alice", "alice", day)));
   await assertFails(setDoc(ref, logPayload("app1__alice", "alice", day)));
 });
 
@@ -601,13 +621,30 @@ test("a log cannot reference an assignment that does not exist", async () => {
   );
 });
 
-test("logs are append-only", async () => {
-  const db = asUser("alice");
+test("logs are sealed: no client create, update or delete", async () => {
+  // A testing log is worth 1/14th of a 50-coin commitment, so deleting one
+  // silently reduces a tester's progress and deleting the fourteenth strips
+  // evidence from a settlement. All three verbs are refused.
   const day = todayKey();
-  const ref = doc(db, `testingLogs/app1__alice__${day}`);
-  await assertSucceeds(setDoc(ref, logPayload("app1__alice", "alice", day)));
+  const path = `testingLogs/app1__alice__${day}`;
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    // Stands in for the server write, which is the only way one appears.
+    await setDoc(doc(ctx.firestore(), path), {
+      assignmentId: "app1__alice",
+      cycle: 1,
+      testerId: "alice",
+      date: day,
+      timeZone: "Asia/Kolkata",
+      createdAt: new Date(),
+    });
+  });
+
+  const db = asUser("alice");
+  const ref = doc(db, path);
+  await assertSucceeds(getDoc(ref)); // reading your own log is still fine
   await assertFails(updateDoc(ref, { date: todayKey(1) }));
   await assertFails(deleteDoc(ref));
+  await assertFails(setDoc(ref, logPayload("app1__alice", "alice", day)));
 });
 
 // ---------------------------------------------------------------------------
@@ -888,9 +925,16 @@ test("every server-owned assignment field stays closed to the tester", async () 
   }
 });
 
-test("the same write without the forbidden field succeeds", async () => {
-  // Pins the test above to a real contrast rather than a vacuous denial.
-  await assertSucceeds(
+test("even the formerly-permitted write is now refused", async () => {
+  // The test above lists forbidden fields. This one used to prove the denial
+  // was about those fields specifically, by showing the same write succeeded
+  // without them. That contrast is gone: `testingAssignments` has no
+  // client-writable field at all now, so the clean write is refused too.
+  //
+  // The contrast has moved elsewhere — a tester can still edit their own
+  // profile (see "the legitimate tester flows still work"), which is what
+  // shows the denial here is scoped rather than a blanket lockout.
+  await assertFails(
     updateDoc(doc(asUser("alice"), "testingAssignments/done__alice"), {
       status: "waitingForVerification",
       updatedAt: serverTimestamp(),
@@ -898,13 +942,17 @@ test("the same write without the forbidden field succeeds", async () => {
   );
 });
 
-test("re-sending a protected field's existing value is a permitted no-op", async () => {
-  // Documented because it looks alarming and is not: `affectedKeys()` reports
-  // only keys whose value actually changed, so echoing the stored
-  // daysCompleted back changes nothing about the document. The tester gains
-  // no state they did not already have — and changing it is still refused.
+test("the no-op loophole is closed along with the write itself", async () => {
+  // This used to document a real subtlety: `affectedKeys()` reports only keys
+  // whose value actually CHANGED, so echoing a protected field's stored value
+  // back was a permitted no-op. It was safe — the tester gained no state they
+  // did not already have — but it was a nuance that had to be reasoned about.
+  //
+  // With `allow update: if false` there is nothing left to reason about. Both
+  // the echo and the real change are refused, which is a smaller thing to hold
+  // in your head and a smaller thing to get wrong later.
   const db = asUser("alice");
-  await assertSucceeds(
+  await assertFails(
     updateDoc(doc(db, "testingAssignments/done__alice"), {
       status: "waitingForVerification",
       updatedAt: serverTimestamp(),
@@ -938,22 +986,14 @@ test("a user with no role, isSuspended or coinBalance can still read their own w
   );
 });
 
-test("the legitimate tester flows still work after the reward model landed", async () => {
-  const day = todayKey();
-  // Logging a day.
-  await assertSucceeds(
-    setDoc(
-      doc(asUser("alice"), `testingLogs/app1__alice__${day}`),
-      logPayload("app1__alice", "alice", day),
-    ),
-  );
-  // Requesting verification once the server-counted days are met.
-  await assertSucceeds(
-    updateDoc(doc(asUser("alice"), "testingAssignments/done__alice"), {
-      status: "waitingForVerification",
-      updatedAt: serverTimestamp(),
-    }),
-  );
+test("the legitimate tester flows still work after the testing engine landed", async () => {
+  // The contrast that matters: the lockdown of testingLogs and
+  // testingAssignments is SCOPED, not a blanket refusal of everything a
+  // signed-in tester does. Logging a day and requesting verification are gone
+  // from this list because both are server-side operations now; everything a
+  // tester legitimately owns still works.
+  // Reading your own assignment and your own logs.
+  await assertSucceeds(getDoc(doc(asUser("alice"), "testingAssignments/done__alice")));
   // Editing an own profile field.
   await assertSucceeds(
     updateDoc(doc(asUser("alice"), "users/alice"), {

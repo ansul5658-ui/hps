@@ -12,10 +12,13 @@
  * a flag, removed - and this function no longer touches the wallet or the
  * ledger at all. It records that the work was verified, and nothing else.
  *
- * The unlock-on-completion path (returning the staked coins) is a later batch
- * and will live in `wallet.js`, where the invariant is enforced. Do not add
- * coin movement back into this file: verification runs under admin authority,
- * and money movement must stay in one auditable place.
+ * Batch 3 added the unlock: a verified assignment that carries a commitment
+ * now RETURNS the tester's staked coins in the same transaction as the status
+ * flip. That is still not a reward - the coins returned are the coins the
+ * tester put in. The movement itself is staged by
+ * `commitments.stageUnlockSettlement`, which funnels into the single wallet
+ * primitive in `wallet.js`, so this file never computes a balance delta of its
+ * own. Do not add one here.
  *
  * SECURITY MODEL
  *   * The caller supplies an assignment id and nothing else.
@@ -30,16 +33,18 @@ const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const logger = require("firebase-functions/logger");
 
-const { REGION } = require("./lib/constants");
+const { REGION, ACTOR_KIND_ADMIN } = require("./lib/constants");
 const { checkCompletionEligible } = require("./lib/completion");
+const { stageUnlockSettlement } = require("./commitments");
 const { requireAuth, requireAdmin, requireDocId } = require("./lib/guards");
 const { isValidDocId } = require("./lib/validation");
 
 /**
  * Verify an assignment, atomically.
  *
- * Exported separately from the callable - the same split `runMatching` uses -
- * so the path can be tested without the Functions runtime.
+ * Exported separately from the callable - the same split every privileged
+ * path in this project uses - so it can be tested without the Functions
+ * runtime.
  *
  * @returns {Promise<{assignmentId: string, verified: boolean, reason?: string,
  *                    testerId?: string}>}
@@ -102,17 +107,42 @@ async function runCompletionVerification(db, { assignmentId, adminUid }) {
       throw new HttpsError(eligible.code, eligible.message);
     }
 
-    // ---- write: the status flip, and nothing else --------------------
-    // No ledger entry. No balance change. Verification is a record that the
-    // work happened; it is not a payment event.
+    // ---- settlement: return the staked coins, in THIS transaction ----
+    //
+    // Composed into the same transaction rather than run as a second one. A
+    // separate transaction could interleave and leave the assignment
+    // completed with the tester's coins still locked, which is the one
+    // outcome the whole design exists to prevent.
+    //
+    // Returns null for a reward-era assignment that never staked anything:
+    // those complete with no coin movement, exactly as they did in Batch 2.
+    const settlement = await stageUnlockSettlement(tx, db, {
+      assignmentSnap: assignment,
+      qualifyingDays: loggedDays,
+      actorId: adminUid,
+      actorKind: ACTOR_KIND_ADMIN,
+    });
+
+    // ---- write: the status flip -------------------------------------
+    // Still no reward. When coins move it is an UNLOCK of the tester's own
+    // stake, never a payment; `settlementTxId` records which entry did it.
     tx.update(assignmentRef, {
       status: "completed",
       completedAt: FieldValue.serverTimestamp(),
       verifiedBy: adminUid,
+      qualifyingDays: loggedDays,
+      settlementTxId: settlement ? settlement.settlementTxId : null,
       updatedAt: FieldValue.serverTimestamp(),
     });
 
-    return { assignmentId, verified: true, testerId };
+    return {
+      assignmentId,
+      verified: true,
+      testerId,
+      settled: Boolean(settlement),
+      settlementTxId: settlement ? settlement.settlementTxId : null,
+      unlockedAmount: settlement ? settlement.amount : 0,
+    };
   });
 }
 
@@ -131,7 +161,10 @@ async function verifyAssignmentCompletion(db, request) {
 
   if (outcome.verified) {
     logger.info(
-      `admin ${uid} verified assignment ${assignmentId} for ${outcome.testerId} (no coins moved)`,
+      `admin ${uid} verified assignment ${assignmentId} for ${outcome.testerId}` +
+        (outcome.settled
+          ? ` - returned ${outcome.unlockedAmount} committed coins (${outcome.settlementTxId})`
+          : " - no commitment attached, no coins moved"),
     );
   } else {
     logger.info(

@@ -48,15 +48,10 @@ internal class FirestoreAdminRepository(
     override fun observeAllAssignments(): Flow<List<TestAssignment>> =
         firestore.collection("testingAssignments").snapshots()
             .map { snap ->
-                snap.documents.map { doc ->
-                    doc.toAssignment(
-                        // Server-maintained by syncAssignmentProgress.
-                        daysCompleted = doc.getLong("daysCompleted")?.toInt() ?: 0,
-                        // Per-day check-in state is derived from testingLogs,
-                        // which the admin list doesn't load.
-                        lastLoggedDayKey = null,
-                    )
-                }
+                // Progress now comes off the assignment itself — the testing
+                // engine maintains it transactionally — so the console reads
+                // the same authoritative numbers the tester sees.
+                snap.documents.map { it.toAssignment() }
             }
 
     // ---- Privileged operations -----------------------------------------
@@ -80,9 +75,9 @@ internal class FirestoreAdminRepository(
         Unit
     }
 
-    override suspend fun assignTesters(appId: String): Result<Int> = runCatching {
-        val result = functions.call("createTestingAssignments", mapOf("appId" to appId))
-        (result["created"] as? Number)?.toInt() ?: 0
+    override suspend fun previewEligibleTesters(appId: String): Result<Int> = runCatching {
+        val result = functions.call("previewEligibleTesters", mapOf("appId" to appId))
+        (result["eligibleCount"] as? Number)?.toInt() ?: 0
     }
 
     override suspend fun upsertGroup(
