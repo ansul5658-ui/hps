@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "testingAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "windowEndsAt", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

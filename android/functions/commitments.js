@@ -72,6 +72,8 @@ const {
   checkForfeitEligible,
 } = require("./lib/commitments");
 const { deriveWindow, isValidTimeZone } = require("./lib/testingDays");
+const { checkCommitmentExpiry } = require("./lib/expiry");
+const { readOutageRecords } = require("./systemHealth");
 const { readWalletForUpdate, stageWalletEntry } = require("./wallet");
 const { requireAuth, requireAdmin, requireDocId } = require("./lib/guards");
 
@@ -385,13 +387,70 @@ async function stageUnlockSettlement(tx, db, { assignmentSnap, qualifyingDays, a
 // ---------------------------------------------------------------------------
 
 /**
+ * Turn a refused expiry verdict into a message worth reading in a log.
+ *
+ * Every branch here is a REFUSAL to destroy someone's coins, so each one says
+ * which rule saved the commitment. "failed-precondition" with no explanation
+ * is the kind of thing that gets debugged by re-running a forfeiture with the
+ * checks removed.
+ */
+function expiryRefusalMessage(expiry) {
+  switch (expiry.reason) {
+    case "requirementMet":
+      return "That commitment met its requirement and must be completed, not forfeited.";
+    case "windowOpen":
+      return expiry.creditedOutageDays > 0
+        ? `That commitment's window is still open: ${expiry.creditedOutageDays} ` +
+          `declared outage day(s) extend it to ${expiry.effectiveLastEligibleDayKey}.`
+        : "That commitment's testing window has not closed yet.";
+    case "alreadySettled":
+      return "That commitment has already been settled.";
+    case "noCommitment":
+      return "That assignment has no committed coins to forfeit.";
+    case "noTimeZone":
+      return "That assignment has no pinned timezone, so its deadline cannot be determined.";
+    case "invalidWindow":
+      return "That assignment has no valid testing window.";
+    default:
+      return "That commitment is not eligible for forfeiture.";
+  }
+}
+
+/**
  * Forfeit an expired commitment, atomically.
  *
+ * THE ONE SETTLEMENT PRIMITIVE FOR FORFEITURE. The admin callable, the
+ * scheduled sweep and the tests all come through here; none of them
+ * reimplements a coin movement, and none of them decides for itself whether a
+ * window has closed. A second forfeiture path would be a second chance to get
+ * "destroy 50 of someone's coins" wrong.
+ *
  * Trusted server path only. The decision is made entirely from stored
- * assignment state and the server clock - see `checkForfeitEligible`, which
- * takes no input that a client or a failed request could influence.
+ * assignment state, the declared outage records and the server clock. Nothing
+ * a client sends - and nothing about a failed request, an offline device or a
+ * timed-out function - participates in it.
+ *
+ * TWO INDEPENDENT GATES, BOTH OF WHICH MUST AGREE
+ *   1. `checkForfeitEligible` - the coarse elapsed-time rule (createdAt plus
+ *      the window length).
+ *   2. `checkCommitmentExpiry` - the PINNED local-day window, with declared
+ *      outage days credited.
+ * Requiring both is strictly harder to satisfy than either alone, and the
+ * pinned rule is the later of the two, so it is the one that effectively
+ * governs. Keeping the coarse rule as well costs nothing and means a bug in
+ * the day arithmetic cannot forfeit a commitment that has plainly not run its
+ * calendar length.
+ *
+ * FAILS CLOSED ON MISSING STATE. An assignment with no readable pinned zone
+ * cannot be forfeited at all: no deadline can be derived for it, and guessing
+ * one would move it. Every assignment carrying a lock has a pinned window -
+ * the claim transaction writes it unconditionally - so in practice this only
+ * catches corruption, which is exactly when refusing is right.
  */
-async function runForfeitCommitment(db, { assignmentId, actorId, actorKind }) {
+async function runForfeitCommitment(
+  db,
+  { assignmentId, actorId, actorKind, nowMillis = Date.now() },
+) {
   const assignmentRef = db.doc(assignmentPath(assignmentId));
 
   return db.runTransaction(async (tx) => {
@@ -416,10 +475,47 @@ async function runForfeitCommitment(db, { assignmentId, actorId, actorKind }) {
       windowDays: assignmentSnap.get("windowDays"),
       daysRequired: assignmentSnap.get("daysRequired"),
       qualifyingDays,
-      nowMillis: Date.now(),
+      nowMillis,
     });
     if (!eligible.ok) {
       throw new HttpsError(eligible.code, eligible.message);
+    }
+
+    // Declared outages, read INSIDE the transaction. That placement is the
+    // whole defence against the outage/expiry race: an admin declaring a day
+    // degraded while this transaction is in flight changes a document this
+    // transaction has read, so Firestore aborts and retries it, and the retry
+    // sees the declaration and declines to forfeit. Reading them before the
+    // transaction would settle the race by luck.
+    const firstEligibleDayKey = assignmentSnap.get("firstEligibleDayKey");
+    const lastEligibleDayKey = assignmentSnap.get("lastEligibleDayKey");
+    const outageRecords = await readOutageRecords(db, {
+      fromDayKey: firstEligibleDayKey,
+      toDayKey: lastEligibleDayKey,
+      tx,
+    });
+
+    // The pinned local-day window, with outage credit applied. This is the
+    // same decision `evaluateWindowExpiry` reports read-only, re-derived here
+    // rather than trusted from a caller - the sweep tells this function WHICH
+    // assignment to look at, never WHETHER to forfeit it.
+    const expiry = checkCommitmentExpiry({
+      status: assignmentSnap.get("status"),
+      lockTxId,
+      appId,
+      timeZone: assignmentSnap.get("timeZone"),
+      firstEligibleDayKey,
+      lastEligibleDayKey,
+      qualifyingDays,
+      daysRequired: assignmentSnap.get("daysRequired"),
+      outageRecords,
+      nowMillis,
+    });
+    if (!expiry.expired) {
+      throw new HttpsError(
+        "failed-precondition",
+        expiryRefusalMessage(expiry),
+      );
     }
 
     const { ref: walletRef, wallet } = await readWalletForUpdate(tx, db, testerId);
@@ -445,6 +541,12 @@ async function runForfeitCommitment(db, { assignmentId, actorId, actorKind }) {
       status: "failed",
       settlementTxId: entryId,
       qualifyingDays,
+      // Written only now, as part of the terminal record, and never consulted
+      // to make a decision - the live calculation always re-derives it. This
+      // is an audit trail for "why did this window end when it did", not the
+      // source of truth it would become if the evaluator read it back.
+      creditedOutageDays: expiry.creditedOutageDays,
+      effectiveLastEligibleDayKey: expiry.effectiveLastEligibleDayKey,
       forfeitedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -457,6 +559,8 @@ async function runForfeitCommitment(db, { assignmentId, actorId, actorKind }) {
       amount,
       settlementTxId: entryId,
       qualifyingDays,
+      creditedOutageDays: expiry.creditedOutageDays,
+      effectiveLastEligibleDayKey: expiry.effectiveLastEligibleDayKey,
       wallet: {
         available: staged.wallet.available,
         locked: staged.wallet.locked,

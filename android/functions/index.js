@@ -24,6 +24,8 @@ const assignments = require("./assignments");
 const completion = require("./completion");
 const commitments = require("./commitments");
 const testingDays = require("./testingDays");
+const expiry = require("./expiry");
+const systemHealth = require("./systemHealth");
 const wallet = require("./wallet");
 const quickTests = require("./quickTests");
 
@@ -69,6 +71,28 @@ exports.adminForfeitCommitment = commitments.adminForfeitCommitment;
 // upside — and "qualifyingDays is server-authoritative" is only meaningful
 // with exactly one authority.
 exports.recordTestingDay = testingDays.recordTestingDay;
+
+// Automatic expiry. `evaluateExpiredCommitments` is the ONLY scheduled writer
+// of money in this project, and it deliberately owns none of the arithmetic:
+// it selects candidates and hands each to `runForfeitCommitment`, the same
+// transaction the admin callable uses. Forfeiture is keyed to the assignment
+// (`forfeit_{assignmentId}`, written with `tx.create`), so a retried run, an
+// overlapping run and a manual sweep all converge on exactly one settlement.
+//
+// `adminEvaluateExpiry` is READ-ONLY: it answers "would this be forfeited, and
+// why" without the permission to make it so.
+exports.evaluateExpiredCommitments = expiry.evaluateExpiredCommitments;
+exports.adminEvaluateExpiry = expiry.adminEvaluateExpiry;
+exports.adminRunExpirySweep = expiry.adminRunExpirySweep;
+
+// Declared service outages — `systemHealth/{yyyy-MM-dd}`, admin-only. A
+// declared day extends every affected commitment's window, which is exactly
+// what a tester would forge to escape a commitment they were about to fail, so
+// rules refuse every client write and this callable re-verifies the admin role
+// on each invocation. Declaring a day writes NOTHING to any assignment: the
+// extension is derived at evaluation time, so declaring late, twice, or after
+// some commitments were already evaluated is safe.
+exports.adminDeclareOutage = systemHealth.adminDeclareOutage;
 
 // Quick Tests — discovery sessions, entirely outside the coin economy.
 exports.startQuickTest = quickTests.startQuickTest;

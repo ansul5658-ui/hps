@@ -197,13 +197,26 @@ internal fun AssignmentStatus.serialize(): String = when (this) {
     AssignmentStatus.InProgress -> "inProgress"
     AssignmentStatus.WaitingForVerification -> "waitingForVerification"
     AssignmentStatus.Completed -> "completed"
+    AssignmentStatus.Failed -> "failed"
     AssignmentStatus.Missed -> "missed"
 }
 
+/**
+ * Map the server's status string.
+ *
+ * `"failed"` is what the forfeiture transaction writes, and it used to fall
+ * through this `else` to [AssignmentStatus.Ready] - so an assignment whose 50
+ * coins had just been consumed was displayed as ready to start. The unknown
+ * fallback stays [AssignmentStatus.Ready] deliberately (a status this client
+ * has never heard of should read as "nothing to report", not as a failure),
+ * which is exactly why a real status must be listed explicitly rather than
+ * left to it.
+ */
 internal fun parseAssignmentStatus(raw: String?): AssignmentStatus = when (raw) {
     "inProgress" -> AssignmentStatus.InProgress
     "waitingForVerification" -> AssignmentStatus.WaitingForVerification
     "completed" -> AssignmentStatus.Completed
+    "failed" -> AssignmentStatus.Failed
     "missed" -> AssignmentStatus.Missed
     else -> AssignmentStatus.Ready
 }

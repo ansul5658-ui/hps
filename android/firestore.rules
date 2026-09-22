@@ -404,6 +404,39 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---------- systemHealth -------------------------------------------
+
+    match /systemHealth/{dayKey} {
+      // Readable by any signed-in user. A declared outage is not a secret -
+      // a tester who lost a day to one is entitled to see that it was
+      // acknowledged, and a support conversation goes better when both sides
+      // can look at the same record.
+      allow read: if signedIn();
+
+      // NO CLIENT WRITES AT ALL.
+      //
+      // A degraded day extends the testing window of every commitment it
+      // applies to. That makes this collection a direct lever on whether 50
+      // staked coins are forfeited, and it is exactly what a tester about to
+      // fail a commitment would forge: declare yesterday degraded, buy
+      // another day, repeat. There is no amount of field validation that
+      // would make a client write safe here, because the danger is not the
+      // shape of the document - it is who gets to say a day was bad.
+      //
+      // The only writer is `adminDeclareOutage`, which runs with Admin SDK
+      // credentials and re-verifies the caller's admin role against their
+      // user document on every invocation. Note that `isAdmin()` in this file
+      // grants READS only, and deliberately: an admin session compromised in
+      // a browser still cannot write a single outage day.
+      //
+      // `delete` is refused as firmly as `create`. Withdrawing a
+      // mis-declared day is `degraded: false` through the callable, which
+      // keeps the record of who declared what and who withdrew it. Deleting
+      // the document would silently re-expose every commitment that day was
+      // protecting, with nothing left to explain why.
+      allow write: if false;
+    }
+
     // Anything not matched explicitly is denied. This is important:
     // future collections should get their own dedicated match block
     // that opens up only what the corresponding repository actually needs.

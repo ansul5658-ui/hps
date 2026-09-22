@@ -47,6 +47,7 @@ const {
 } = require("../lib/commitments");
 const { runCompletionVerification } = require("../completion");
 const { checkInvariants } = require("../lib/wallet");
+const { deriveWindow } = require("../lib/testingDays");
 const {
   DEFAULT_COMMITMENT_AMOUNT,
   COMMITMENT_DAYS_REQUIRED,
@@ -394,6 +395,9 @@ test("unlock requires a lock, a live status and the full day count", () => {
 // ---------------------------------------------------------------------------
 
 const DAY0 = 1_700_000_000_000;
+
+/** The zone a real claim pins when the tester supplies none. */
+const FIXTURE_TZ = "Asia/Kolkata";
 const forfeitBase = {
   status: "inProgress",
   lockTxId: "lock_x",
@@ -700,10 +704,32 @@ test("two sequential claims on one balance: the second is refused", async () => 
 // Completion / unlock
 // ---------------------------------------------------------------------------
 
+/**
+ * The pinned commitment clock a real claim writes.
+ *
+ * Fixtures used to omit this, which made them describe an assignment the claim
+ * path cannot actually produce. Forfeiture now requires the pinned local-day
+ * window (with outage credit) as well as the coarse elapsed-time rule, so an
+ * assignment without one is correctly un-forfeitable - and a fixture without
+ * one was testing a shape that does not exist.
+ */
+function pinnedClock(claimedAtMillis) {
+  const w = deriveWindow({ claimedAtMillis, timeZone: FIXTURE_TZ });
+  return {
+    timeZone: w.timeZone,
+    timeZoneSource: "default",
+    claimedDayKey: w.claimedDayKey,
+    firstEligibleDayKey: w.firstEligibleDayKey,
+    lastEligibleDayKey: w.lastEligibleDayKey,
+    creditedOutageDays: 0,
+  };
+}
+
 /** A claimed commitment with `logs` qualifying days recorded. */
 function claimedWorld({ logs = 14, status = "inProgress", available = 0, locked = 50 } = {}) {
   const seed = world({ available, locked });
   seed[C1_PATH] = {
+    ...pinnedClock(DAY0),
     appId: APP,
     testerId: TESTER,
     developerId: DEV,
@@ -836,8 +862,11 @@ test("a reward-era assignment still completes with no coin movement", async () =
 /** A commitment whose window has closed with only `logs` days recorded. */
 function expiredWorld({ logs = 3 } = {}) {
   const seed = claimedWorld({ logs, available: 0, locked: 50 });
-  // Started long enough ago that the 18-day window has certainly elapsed.
-  seed[C1_PATH].createdAt = { toMillis: () => Date.now() - 30 * MILLIS_PER_DAY };
+  // Started long enough ago that BOTH gates have elapsed: the coarse
+  // createdAt-plus-window rule and the pinned local-day window.
+  const claimedAt = Date.now() - 30 * MILLIS_PER_DAY;
+  seed[C1_PATH].createdAt = { toMillis: () => claimedAt };
+  Object.assign(seed[C1_PATH], pinnedClock(claimedAt));
   return seed;
 }
 

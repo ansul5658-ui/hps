@@ -40,6 +40,7 @@ const {
   MILLIS_PER_DAY,
 } = require("../lib/commitments");
 const { checkInvariants } = require("../lib/wallet");
+const { deriveWindow } = require("../lib/testingDays");
 const { COMMITMENT_DAYS_REQUIRED, COMMITMENT_WINDOW_DAYS } = require("../lib/constants");
 
 const PROJECT_ID = "apptesting-concurrency-test";
@@ -456,9 +457,7 @@ test("a completed cycle frees the app for a new, distinctly identified cycle", a
 test("a forfeited cycle also frees the app for a new cycle", async () => {
   await seed({ available: 50 });
   const first = await claim(APP_A);
-  await db.doc(`testingAssignments/${first.assignmentId}`).update({
-    createdAt: Timestamp.fromMillis(Date.now() - 30 * MILLIS_PER_DAY),
-  });
+  await ageCommitment(first.assignmentId);
   await runForfeitCommitment(db, {
     assignmentId: first.assignmentId,
     actorId: "system",
@@ -559,6 +558,33 @@ test("a completion short of the requirement moves nothing and keeps the claim", 
   assert.equal(state.ledgerCount, 1, "no unlock entry");
 });
 
+/**
+ * Age a real commitment so its window has genuinely closed.
+ *
+ * These fixtures used to backdate `createdAt` alone. That was enough while
+ * forfeiture judged the deadline as `createdAt + windowDays`, but the claim
+ * path also pins a LOCAL-DAY window, and forfeiture now requires that window
+ * to have closed as well. Moving only `createdAt` produced an assignment that
+ * cannot exist in reality: created a month ago, yet with a testing window
+ * still running from today.
+ *
+ * So the whole clock is moved together, exactly as `deriveWindow` would have
+ * written it had the tester claimed 30 days ago.
+ */
+async function ageCommitment(assignmentId, daysAgo = 30) {
+  const ref = db.doc(`testingAssignments/${assignmentId}`);
+  const snap = await ref.get();
+  const claimedAtMillis = Date.now() - daysAgo * MILLIS_PER_DAY;
+  const w = deriveWindow({ claimedAtMillis, timeZone: snap.get("timeZone") });
+  await ref.update({
+    createdAt: Timestamp.fromMillis(claimedAtMillis),
+    claimedDayKey: w.claimedDayKey,
+    firstEligibleDayKey: w.firstEligibleDayKey,
+    lastEligibleDayKey: w.lastEligibleDayKey,
+    windowEndsAt: Timestamp.fromMillis(w.windowEndsAtMillis),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Settlement: forfeit
 // ---------------------------------------------------------------------------
@@ -567,9 +593,7 @@ test("an expired short commitment forfeits the full stake, exactly once", async 
   await seed({ available: 50 });
   const c = await claim(APP_A);
   await seedLogs(c.assignmentId, 3);
-  await db.doc(`testingAssignments/${c.assignmentId}`).update({
-    createdAt: Timestamp.fromMillis(Date.now() - 30 * MILLIS_PER_DAY),
-  });
+  await ageCommitment(c.assignmentId);
 
   const outcome = await runForfeitCommitment(db, {
     assignmentId: c.assignmentId,
@@ -595,9 +619,7 @@ test("concurrent forfeitures consume the stake exactly once", async () => {
   await seed({ available: 50 });
   const c = await claim(APP_A);
   await seedLogs(c.assignmentId, 1);
-  await db.doc(`testingAssignments/${c.assignmentId}`).update({
-    createdAt: Timestamp.fromMillis(Date.now() - 30 * MILLIS_PER_DAY),
-  });
+  await ageCommitment(c.assignmentId);
 
   const run = () =>
     runForfeitCommitment(db, {
@@ -637,9 +659,7 @@ test("forfeiture is refused when the tester actually did the work", async () => 
   await seed({ available: 50 });
   const c = await claim(APP_A);
   await seedLogs(c.assignmentId, COMMITMENT_DAYS_REQUIRED);
-  await db.doc(`testingAssignments/${c.assignmentId}`).update({
-    createdAt: Timestamp.fromMillis(Date.now() - 30 * MILLIS_PER_DAY),
-  });
+  await ageCommitment(c.assignmentId);
 
   await assert.rejects(
     runForfeitCommitment(db, {
@@ -669,9 +689,7 @@ test("a settled commitment cannot then be forfeited, and vice versa", async () =
   const done = await claim(APP_A);
   await seedLogs(done.assignmentId, COMMITMENT_DAYS_REQUIRED);
   await runCompletionVerification(db, { assignmentId: done.assignmentId, adminUid: ADMIN });
-  await db.doc(`testingAssignments/${done.assignmentId}`).update({
-    createdAt: Timestamp.fromMillis(Date.now() - 30 * MILLIS_PER_DAY),
-  });
+  await ageCommitment(done.assignmentId);
   await assert.rejects(
     runForfeitCommitment(db, {
       assignmentId: done.assignmentId,
@@ -684,9 +702,7 @@ test("a settled commitment cannot then be forfeited, and vice versa", async () =
   // Forfeited, then completion attempted.
   const lost = await claim(APP_B);
   await seedLogs(lost.assignmentId, 2);
-  await db.doc(`testingAssignments/${lost.assignmentId}`).update({
-    createdAt: Timestamp.fromMillis(Date.now() - 30 * MILLIS_PER_DAY),
-  });
+  await ageCommitment(lost.assignmentId);
   await runForfeitCommitment(db, {
     assignmentId: lost.assignmentId,
     actorId: "system",

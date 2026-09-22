@@ -230,8 +230,26 @@ enum class AssignmentStatus {
     InProgress,
     WaitingForVerification,
     Completed,
+    /**
+     * The commitment window closed below the required qualifying days and the
+     * staked coins were forfeited.
+     *
+     * Written by the server as `"failed"` - by the automatic expiry evaluator
+     * or by an admin forfeiture. Before this existed the mapper fell through to
+     * [Ready], so a tester who had just lost 50 coins saw their assignment
+     * described as ready to start. That was survivable only while forfeiture
+     * required an admin to act; with the scheduled evaluator it became the
+     * normal end state for an abandoned commitment.
+     */
+    Failed,
     Missed,
 }
+
+/** True once an assignment can no longer change - mirrors TERMINAL_ASSIGNMENT_STATUSES. */
+val AssignmentStatus.isTerminal: Boolean
+    get() = this == AssignmentStatus.Completed ||
+        this == AssignmentStatus.Failed ||
+        this == AssignmentStatus.Missed
 
 /**
  * A user's Testing Coin wallet — `users/{uid}/wallet/balance`.

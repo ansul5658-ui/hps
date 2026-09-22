@@ -14,6 +14,7 @@ import com.apptesting.app.core.model.AppApprovalStatus
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.CoinWallet
+import com.apptesting.app.core.model.isTerminal
 import com.apptesting.app.core.model.Group
 import com.apptesting.app.core.model.GroupMember
 import com.apptesting.app.core.model.Notification
@@ -170,7 +171,12 @@ class HomeViewModel(
         val appNameById = myApps.associateBy { it.id }.toMutableMap()
         val activeGroup = allGroups.firstOrNull { g -> memberships.any { it.groupId == g.id } }
         val rows = myAssignments
-            .filter { it.status != AssignmentStatus.Completed && it.status != AssignmentStatus.Missed }
+            // "Active" means not yet settled. `isTerminal` rather than a
+            // hand-written pair, so a forfeited commitment leaves this list the
+            // moment the evaluator settles it - listing one under Active
+            // Assignments would invite a tester to keep testing an assignment
+            // whose coins are already gone.
+            .filter { !it.status.isTerminal }
             .sortedBy { it.status.ordinal }
             .take(4)
             .map { a ->

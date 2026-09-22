@@ -108,6 +108,37 @@ const TIMEZONE_SOURCE_DEFAULT = "default";
 const ACTIVE_CLAIMS_COLLECTION = "activeClaims";
 
 /**
+ * Collection of declared service-outage days, keyed `yyyy-MM-dd`.
+ *
+ * The document id IS the day key, so a day can carry only one declaration.
+ * Admin-written through a callable; rules refuse every client write, because a
+ * tester who could declare a day degraded could extend their own deadline.
+ */
+const SYSTEM_HEALTH_COLLECTION = "systemHealth";
+
+/**
+ * How often the scheduled expiry evaluator runs.
+ *
+ * Daily, deliberately. A commitment window closes at a LOCAL midnight, and the
+ * testers in this pilot share one timezone, so a single daily pass settles
+ * every window that closed since the last one. Running it more often would
+ * cost the same scan repeatedly to buy nothing: nothing about a forfeiture is
+ * time-critical, and the ledger entry is keyed to the assignment rather than
+ * to the moment the sweep noticed.
+ */
+const EXPIRY_SWEEP_SCHEDULE = "every day 03:30";
+
+/**
+ * Most commitments one scheduled sweep will settle.
+ *
+ * A bound rather than an expectation: it keeps one pass inside the function
+ * timeout no matter how much of a backlog exists, and anything left over is
+ * picked up by the next run. Forfeiture is idempotent, so a partial sweep is
+ * simply a shorter sweep - never an inconsistent one.
+ */
+const EXPIRY_SWEEP_LIMIT = 200;
+
+/**
  * Assignment statuses from which no further settlement is possible.
  *
  * Reaching one of these is what releases the active claim. Settling twice is
@@ -258,6 +289,9 @@ module.exports = {
   COMMITMENT_DAYS_REQUIRED,
   COMMITMENT_WINDOW_DAYS,
   ACTIVE_CLAIMS_COLLECTION,
+  SYSTEM_HEALTH_COLLECTION,
+  EXPIRY_SWEEP_SCHEDULE,
+  EXPIRY_SWEEP_LIMIT,
   DEFAULT_COMMITMENT_TIMEZONE,
   TIMEZONE_SOURCE_TESTER,
   TIMEZONE_SOURCE_DEFAULT,

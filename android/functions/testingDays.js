@@ -42,6 +42,8 @@ const {
   nextCheckInAtMillis,
 } = require("./lib/testingDays");
 const { stageUnlockSettlement, assignmentPath } = require("./commitments");
+const { readOutageRecords } = require("./systemHealth");
+const { effectiveLastEligibleDayKey } = require("./lib/outages");
 const { requireAuth, requireDocId } = require("./lib/guards");
 
 function logPath(logId) {
@@ -128,12 +130,33 @@ async function runRecordTestingDay(db, { assignmentId, testerId, nowMillis = Dat
     const daysRequired = assignmentSnap.get("daysRequired") || COMMITMENT_DAYS_REQUIRED;
     const storedQualifying = assignmentSnap.get("qualifyingDays");
 
+    // Declared outage days extend the window, so they have to be credited
+    // HERE too, not only at forfeiture. If the check-in path used the raw
+    // deadline it would refuse a day that the expiry evaluator would then
+    // count the tester as having had - the tester would be told the window had
+    // closed and then punished for not testing in it. One window, both paths.
+    //
+    // Read inside the transaction for the same reason forfeiture does it: a
+    // declaration landing mid-flight must make this transaction retry rather
+    // than be missed.
+    const outageRecords = await readOutageRecords(db, {
+      fromDayKey: clock.firstEligibleDayKey,
+      toDayKey: clock.lastEligibleDayKey,
+      tx,
+    });
+    const effectiveLastDayKey = effectiveLastEligibleDayKey({
+      firstEligibleDayKey: clock.firstEligibleDayKey,
+      lastEligibleDayKey: clock.lastEligibleDayKey,
+      appId: assignmentSnap.get("appId"),
+      records: outageRecords,
+    });
+
     const eligible = checkTestingDayEligible({
       status: assignmentSnap.get("status"),
       lockTxId: assignmentSnap.get("lockTxId"),
       cycle: assignmentSnap.get("cycle"),
       firstEligibleDayKey: clock.firstEligibleDayKey,
-      lastEligibleDayKey: clock.lastEligibleDayKey,
+      lastEligibleDayKey: effectiveLastDayKey,
       todayKey,
       qualifyingDays: storedQualifying,
       daysRequired,
@@ -235,7 +258,7 @@ async function runRecordTestingDay(db, { assignmentId, testerId, nowMillis = Dat
       unlockedAmount: settlement ? settlement.amount : 0,
       flexDaysRemaining: flexDaysRemaining({
         firstEligibleDayKey: clock.firstEligibleDayKey,
-        lastEligibleDayKey: clock.lastEligibleDayKey,
+        lastEligibleDayKey: effectiveLastDayKey,
         todayKey,
         qualifyingDays: nextQualifying,
         daysRequired,
@@ -275,12 +298,18 @@ async function recordTestingDayImpl(db, request) {
 }
 
 /**
- * Read-only: is this commitment's window closed short?
+ * Read-only: is this commitment's window closed short, ignoring outages?
  *
- * The server-authoritative expiry calculation, exposed so the scheduled
- * evaluator in a later batch can call it without reimplementing the rule. It
- * decides nothing about money and writes nothing - the settlement it feeds is
- * `runForfeitCommitment` in `commitments.js`, which re-checks independently.
+ * Reports the RAW pinned window. It deliberately does not credit declared
+ * outage days, so it can say "expired" about a commitment that an outage
+ * protects.
+ *
+ * DO NOT USE THIS TO DECIDE A FORFEITURE. The authoritative evaluator is
+ * `evaluateAssignmentExpiry` in `expiry.js`, which credits outages, and the
+ * only thing that may actually settle one is `runForfeitCommitment`, which
+ * re-derives the whole decision inside its transaction. This function survives
+ * as the narrow "what does the pinned window alone say" probe it always was -
+ * useful for explaining a deadline, not for acting on it.
  */
 async function evaluateWindowExpiry(db, { assignmentId, nowMillis = Date.now() }) {
   const snap = await db.doc(assignmentPath(assignmentId)).get();

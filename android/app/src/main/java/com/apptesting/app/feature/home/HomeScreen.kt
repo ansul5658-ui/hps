@@ -340,6 +340,10 @@ fun assignmentStatusLabel(status: AssignmentStatus): String = when (status) {
     AssignmentStatus.InProgress             -> "In Progress"
     AssignmentStatus.WaitingForVerification -> "Verifying"
     AssignmentStatus.Completed              -> "Completed"
+    // The window closed short and the stake was consumed. Named for what
+    // happened to the coins, not for the tester - "Failed" would read as a
+    // judgement, and the product position is that a commitment ended.
+    AssignmentStatus.Failed                 -> "Stake forfeited"
     AssignmentStatus.Missed                 -> "Missed"
 }
 
@@ -348,6 +352,7 @@ fun assignmentStatusTone(status: AssignmentStatus): StatusTone = when (status) {
     AssignmentStatus.InProgress             -> StatusTone.Warning
     AssignmentStatus.WaitingForVerification -> StatusTone.Warning
     AssignmentStatus.Completed              -> StatusTone.Neutral
+    AssignmentStatus.Failed                 -> StatusTone.Danger
     AssignmentStatus.Missed                 -> StatusTone.Danger
 }
 

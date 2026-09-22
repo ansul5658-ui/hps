@@ -602,6 +602,7 @@ private fun TestAppCard(
                     AssignmentStatus.InProgress -> "Testing" to StatusTone.Success
                     AssignmentStatus.WaitingForVerification -> "Verification" to StatusTone.Warning
                     AssignmentStatus.Completed -> "Completed" to StatusTone.Success
+                    AssignmentStatus.Failed -> "Forfeited" to StatusTone.Danger
                     AssignmentStatus.Missed -> "Expired" to StatusTone.Danger
                 }
                 StatusPill(text = pillLabel, tone = tone)
@@ -820,6 +821,22 @@ private fun ActionRow(
             )
         }
 
+        // The window closed below the required days and the staked coins were
+        // consumed. The amount is stated plainly: the tester is entitled to
+        // know exactly what it cost, and a vague "this assignment ended" would
+        // leave them to discover the balance change on their own.
+        AssignmentStatus.Failed -> {
+            InfoPanel(
+                text = if (commitmentAmount > 0) {
+                    "The testing window closed before 14 days were recorded. " +
+                        "The $commitmentAmount committed coins were forfeited."
+                } else {
+                    "The testing window closed before 14 days were recorded."
+                },
+                container = MaterialTheme.colorScheme.errorContainer,
+                content = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
         AssignmentStatus.Missed -> {
             InfoPanel(
                 text = "This testing assignment expired without completion.",

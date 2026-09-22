@@ -4,6 +4,7 @@ import android.net.Uri
 import com.apptesting.app.core.model.AppApprovalStatus
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.isTerminal
 import com.apptesting.app.core.model.CoinTransaction
 import com.apptesting.app.core.model.CoinTransactionKind
 import com.apptesting.app.core.model.CoinTransactionSource
@@ -170,7 +171,7 @@ internal class MockAssignmentRepository(private val store: MockStore) : Assignme
         val mine = store.assignments.value.filter {
             it.appId == appId && it.testerUserId == userId
         }
-        if (mine.any { it.status != AssignmentStatus.Completed && it.status != AssignmentStatus.Missed }) {
+        if (mine.any { !it.status.isTerminal }) {
             return ClaimAssignmentResult.AlreadyCommitted
         }
 
@@ -246,7 +247,7 @@ internal class MockAssignmentRepository(private val store: MockStore) : Assignme
     override suspend fun recordDayOfTesting(assignmentId: String): LogDayResult {
         val item = store.assignments.value.firstOrNull { it.id == assignmentId }
             ?: return LogDayResult.Error("Assignment not found")
-        if (item.status == AssignmentStatus.Completed || item.status == AssignmentStatus.Missed) {
+        if (item.status.isTerminal) {
             return LogDayResult.Error("This commitment is already ${item.status}.")
         }
         // Stands in for the server's zone-aware day key. The real boundary is
