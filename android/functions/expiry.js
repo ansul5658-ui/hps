@@ -39,6 +39,7 @@ const logger = require("firebase-functions/logger");
 
 const {
   REGION,
+  SCHEDULER_REGION,
   EXPIRY_SWEEP_SCHEDULE,
   EXPIRY_SWEEP_LIMIT,
   COMMITMENT_DAYS_REQUIRED,
@@ -296,7 +297,8 @@ const adminRunExpirySweep = onCall({ region: REGION }, (request) =>
  * the moment the sweep noticed it.
  */
 const evaluateExpiredCommitments = onSchedule(
-  { region: REGION, schedule: EXPIRY_SWEEP_SCHEDULE },
+  // SCHEDULER_REGION, not REGION: Cloud Scheduler has no asia-south2 location.
+  { region: SCHEDULER_REGION, schedule: EXPIRY_SWEEP_SCHEDULE, timeZone: "Asia/Kolkata" },
   async () => {
     await runExpirySweep(getFirestore());
   },

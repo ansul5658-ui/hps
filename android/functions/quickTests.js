@@ -35,6 +35,7 @@ const logger = require("firebase-functions/logger");
 
 const {
   REGION,
+  SCHEDULER_REGION,
   QUICK_TEST_POOL_DOC,
   QUICK_TEST_POOL_SIZE,
   QUICK_TEST_DAILY_LIMIT,
@@ -353,7 +354,8 @@ const adminRefreshQuickTestPool = onCall({ region: REGION }, async (request) => 
  * scan on every Apps screen load.
  */
 const refreshQuickTestPool = onSchedule(
-  { region: REGION, schedule: "every 60 minutes" },
+  // SCHEDULER_REGION, not REGION: Cloud Scheduler has no asia-south2 location.
+  { region: SCHEDULER_REGION, schedule: "every 60 minutes", timeZone: "Asia/Kolkata" },
   async () => {
     await runPoolRefresh(getFirestore());
   },

@@ -9,6 +9,18 @@
 /** Deploy region — matches the default Firestore database location. */
 const REGION = "asia-south2";
 
+/**
+ * Region for SCHEDULED functions only.
+ *
+ * Every other function stays in REGION. Cloud Scheduler has no asia-south2
+ * location, and Firebase-managed `onSchedule` always creates its Scheduler job
+ * in the function's own region (no SDK or CLI override exists), so a scheduled
+ * function in asia-south2 fails to deploy. asia-south1 (Mumbai) is the nearest
+ * region Scheduler supports; the Admin SDK still reaches the asia-south2
+ * database from there.
+ */
+const SCHEDULER_REGION = "asia-south1";
+
 /** Document id of the official platform testing group. */
 const OFFICIAL_GROUP_ID = "app_testing_official";
 
@@ -279,6 +291,7 @@ const JOINABLE_GROUP_STATES = ["draft", "open", "active"];
 
 module.exports = {
   REGION,
+  SCHEDULER_REGION,
   OFFICIAL_GROUP_ID,
   OFFICIAL_GROUP_NAME,
   OFFICIAL_GROUP_EMAIL,
