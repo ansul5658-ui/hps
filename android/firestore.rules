@@ -335,6 +335,14 @@ service cloud.firestore {
       // them could unlock coins it never earned back, move its own deadline,
       // or forfeit someone else's stake.
       //
+      // `cancelledAt` / `cancelledBy` join that list. Cancellation is the one
+      // settlement a tester may ask for, which makes it the one most worth
+      // refusing here: the request goes through `cancelTestingAssignment`,
+      // which moves the coins and releases the claim in the same transaction
+      // that writes these fields. A client able to write them directly could
+      // mark a commitment cancelled without the 50 coins ever moving back —
+      // or, worse, write them onto a commitment that had already forfeited.
+      //
       // The pinned clock deserves a specific note: it is written exactly once,
       // by the claim transaction, and never again by anything. Immutability is
       // what makes it authoritative — a deadline that could be edited after the

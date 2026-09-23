@@ -64,7 +64,10 @@ class AssignmentStatusTest {
         // Deliberate: a status this client has never heard of should read as
         // "nothing to report", not as a failure. Which is precisely why a real
         // status has to be listed explicitly rather than left to this.
-        for (unknown in listOf(null, "", "cancelled", "onHold", "somethingNew")) {
+        // "cancelled" is deliberately NOT in this list any more: it is a real
+        // server status with its own enum value now, so listing it here would
+        // re-assert the exact fall-through this batch removed.
+        for (unknown in listOf(null, "", "onHold", "somethingNew", "archived")) {
             assertEquals(AssignmentStatus.Ready, parseAssignmentStatus(unknown))
         }
     }
@@ -80,12 +83,13 @@ class AssignmentStatusTest {
 
     @Test
     fun terminalMatchesTheServersTerminalSet() {
-        // Mirrors TERMINAL_ASSIGNMENT_STATUSES in functions/lib/constants.js.
-        // `cancelled` has no client enum value and maps to Ready, so it is not
-        // represented here — the three the client can actually hold are.
+        // Mirrors TERMINAL_ASSIGNMENT_STATUSES in functions/lib/constants.js,
+        // which is ["completed", "failed", "missed", "cancelled"]. All four now
+        // have client enum values, so the two sets match exactly.
         assertTrue(AssignmentStatus.Completed.isTerminal)
         assertTrue(AssignmentStatus.Failed.isTerminal)
         assertTrue(AssignmentStatus.Missed.isTerminal)
+        assertTrue(AssignmentStatus.Cancelled.isTerminal)
 
         assertFalse(AssignmentStatus.Ready.isTerminal)
         assertFalse(AssignmentStatus.InProgress.isTerminal)

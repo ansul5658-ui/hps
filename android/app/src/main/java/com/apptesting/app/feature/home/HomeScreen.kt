@@ -223,6 +223,8 @@ private fun HomeContent(
                     daysRequired = row.daysRequired,
                     progress = row.progress,
                     commitmentAmount = row.commitmentAmount,
+                    lastEligibleDayKey = row.lastEligibleDayKey,
+                    hasCommitment = row.hasCommitment,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp)
@@ -269,6 +271,8 @@ private fun AssignmentCard(
     daysRequired: Int,
     progress: Float,
     commitmentAmount: Int,
+    lastEligibleDayKey: String? = null,
+    hasCommitment: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -316,15 +320,13 @@ private fun AssignmentCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                // The stake, not a reward. Completing this assignment returns
-                // these coins; it does not add any. The old copy here read
-                // "+N coins on completion", which promised earnings the
-                // commitment product does not give.
-                Text(
-                    if (commitmentAmount > 0) "$commitmentAmount committed" else "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (hasCommitment && commitmentAmount > 0) {
+                    Text(
+                        if (lastEligibleDayKey != null) "$commitmentAmount committed (by $lastEligibleDayKey)" else "$commitmentAmount committed",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -344,6 +346,9 @@ fun assignmentStatusLabel(status: AssignmentStatus): String = when (status) {
     // happened to the coins, not for the tester - "Failed" would read as a
     // judgement, and the product position is that a commitment ended.
     AssignmentStatus.Failed                 -> "Stake forfeited"
+    // Ended early by the tester. The stake came BACK, so this must never
+    // share wording or tone with the forfeited case above.
+    AssignmentStatus.Cancelled              -> "Cancelled"
     AssignmentStatus.Missed                 -> "Missed"
 }
 
@@ -353,6 +358,7 @@ fun assignmentStatusTone(status: AssignmentStatus): StatusTone = when (status) {
     AssignmentStatus.WaitingForVerification -> StatusTone.Warning
     AssignmentStatus.Completed              -> StatusTone.Neutral
     AssignmentStatus.Failed                 -> StatusTone.Danger
+    AssignmentStatus.Cancelled              -> StatusTone.Neutral
     AssignmentStatus.Missed                 -> StatusTone.Danger
 }
 

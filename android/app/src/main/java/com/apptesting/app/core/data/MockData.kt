@@ -176,6 +176,9 @@ internal class MockStore {
                 daysCompleted = 7,
                 status = AssignmentStatus.InProgress,
                 commitmentAmount = 50,
+                lockTxId = "ct_lock_bytereader",
+                firstEligibleDayKey = "2026-03-02",
+                lastEligibleDayKey = "2026-03-19",
             ),
             TestAssignment(
                 id = "as_pixelpacker_me",
@@ -188,6 +191,9 @@ internal class MockStore {
                 daysCompleted = 2,
                 status = AssignmentStatus.InProgress,
                 commitmentAmount = 50,
+                lockTxId = "ct_lock_pixelpacker",
+                firstEligibleDayKey = "2026-03-07",
+                lastEligibleDayKey = "2026-03-24",
             ),
         ),
     )

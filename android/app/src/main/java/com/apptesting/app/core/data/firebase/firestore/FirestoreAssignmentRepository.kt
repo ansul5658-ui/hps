@@ -1,6 +1,7 @@
 package com.apptesting.app.core.data.firebase.firestore
 
 import com.apptesting.app.core.data.AssignmentRepository
+import com.apptesting.app.core.data.CancelAssignmentResult
 import com.apptesting.app.core.data.ClaimAssignmentResult
 import com.apptesting.app.core.data.LogDayResult
 import com.apptesting.app.core.data.firebase.functions.AppFunctions
@@ -155,6 +156,43 @@ internal class FirestoreAssignmentRepository(
             // "This commitment's testing window has closed") is the best thing
             // to show, so it is passed through rather than replaced.
             LogDayResult.Error(e.message.orEmpty().ifBlank { "Couldn't record today." })
+        }
+    }
+
+    /**
+     * Cancel a live commitment through the server.
+     *
+     * Like [claimAssignment], this deliberately does NOT touch the wallet
+     * locally. The returned amount comes back only so the screen can say what
+     * happened; the balance the user sees still comes from the wallet
+     * listener, so it moves when the server says it moved.
+     *
+     * An already-settled commitment comes back as
+     * [CancelAssignmentResult.AlreadySettled] rather than an error: the server
+     * refuses the second settlement by design, and surfacing that as a failure
+     * would make correct behaviour look broken.
+     */
+    override suspend fun cancelAssignment(assignmentId: String): CancelAssignmentResult {
+        auth.currentUser?.uid
+            ?: return CancelAssignmentResult.Error("Sign in to cancel a commitment.")
+        return try {
+            val result = functions.call(
+                "cancelTestingAssignment",
+                mapOf("assignmentId" to assignmentId),
+            )
+            CancelAssignmentResult.Cancelled(
+                assignmentId = result["assignmentId"] as? String ?: assignmentId,
+                returnedAmount = (result["amount"] as? Number)?.toInt() ?: 0,
+            )
+        } catch (e: IllegalStateException) {
+            val message = e.message.orEmpty()
+            if (message.contains("already been settled", ignoreCase = true)) {
+                CancelAssignmentResult.AlreadySettled(message)
+            } else {
+                CancelAssignmentResult.Error(
+                    message.ifBlank { "Couldn't cancel this commitment." },
+                )
+            }
         }
     }
 

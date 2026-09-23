@@ -29,6 +29,8 @@ const {
   joinTestingAssignmentImpl,
   runForfeitCommitment,
   adminForfeitCommitmentImpl,
+  runCancelCommitment,
+  cancelTestingAssignmentImpl,
 } = require("../commitments");
 const {
   cycleAssignmentId,
@@ -42,6 +44,8 @@ const {
   checkClaimEligible,
   checkUnlockEligible,
   checkForfeitEligible,
+  checkCancelEligible,
+  cancelEntryId,
   windowDeadlineMillis,
   MILLIS_PER_DAY,
 } = require("../lib/commitments");
@@ -1000,4 +1004,256 @@ test("locked always equals the stake of the one live commitment", async () => {
   await verify(settled);
   assert.equal(settled.__read(WALLET_PATH).locked, 0);
   assert.equal(settled.__has(CLAIM_PATH), false);
+});
+
+// ---------------------------------------------------------------------------
+// Cancellation
+//
+// Cancelling returns the SAME staked coins, exactly as completion does. The
+// tests below are written to catch the two ways that could go wrong: paying
+// out something other than the stake, and paying it out more than once.
+// ---------------------------------------------------------------------------
+
+const CANCEL_PATH = `users/${TESTER}/coinTransactions/${cancelEntryId(C1)}`;
+
+const cancel = (db, { assignmentId = C1, actorId = TESTER, isAdmin = false } = {}) =>
+  runCancelCommitment(db, {
+    assignmentId,
+    actorId,
+    actorKind: isAdmin ? "admin" : "user",
+    isAdmin,
+  });
+
+test("cancel entry ids are deterministic and distinct from the other settlements", () => {
+  assert.equal(cancelEntryId("app1__t1__c1"), "cancel_app1__t1__c1");
+  // Distinctness is what lets all three settlements coexist in one ledger
+  // without a collision meaning the wrong thing.
+  const ids = new Set([cancelEntryId(C1), unlockEntryId(C1), forfeitEntryId(C1), lockEntryId(C1)]);
+  assert.equal(ids.size, 4);
+});
+
+test("checkCancelEligible refuses an already-settled assignment", () => {
+  for (const status of ["completed", "failed", "missed", "cancelled"]) {
+    const r = checkCancelEligible({ status, lockTxId: lockEntryId(C1) });
+    assert.equal(r.ok, false, `${status} must not be cancellable`);
+    assert.match(r.message, /already been settled/);
+  }
+});
+
+test("checkCancelEligible refuses an assignment with no stake", () => {
+  const r = checkCancelEligible({ status: "inProgress", lockTxId: null });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /no committed coins/);
+});
+
+test("checkCancelEligible allows a live commitment at any point in the window", () => {
+  for (const status of ["ready", "inProgress", "waitingForVerification"]) {
+    assert.equal(checkCancelEligible({ status, lockTxId: lockEntryId(C1) }).ok, true);
+  }
+});
+
+test("cancelling returns the SAME staked coins and adds nothing", async () => {
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+  const before = db.__read(WALLET_PATH);
+  assert.equal(before.available, 0);
+  assert.equal(before.locked, 50);
+
+  const outcome = await cancel(db);
+
+  assert.equal(outcome.cancelled, true);
+  assert.equal(outcome.amount, 50);
+  const after = db.__read(WALLET_PATH);
+  assert.equal(after.available, 50);
+  assert.equal(after.locked, 0);
+  // Nothing was created: the returned coins are the staked coins.
+  assert.equal(after.forfeitedTotal, 0);
+  assert.equal(after.adjustmentNet, before.adjustmentNet);
+  assert.equal(after.purchasedTotal, before.purchasedTotal);
+  assertWalletSound(db);
+});
+
+test("the cancellation ledger entry is an unlock sourced to cancellation", async () => {
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+  await cancel(db);
+
+  const entry = db.__read(CANCEL_PATH);
+  assert.equal(entry.kind, "unlock");
+  assert.equal(entry.source, "cancellation");
+  assert.equal(entry.amount, 50);
+  assert.equal(entry.deltaAvailable, 50);
+  assert.equal(entry.deltaLocked, -50);
+  assert.equal(entry.deltaForfeited, 0);
+  assert.equal(entry.assignmentId, C1);
+});
+
+test("cancelling writes the terminal status, the settlement id and drops the claim", async () => {
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+  assert.equal(db.__has(CLAIM_PATH), true);
+
+  await cancel(db);
+
+  const a = db.__read(C1_PATH);
+  assert.equal(a.status, "cancelled");
+  assert.equal(a.settlementTxId, cancelEntryId(C1));
+  assert.equal(a.cancelledBy, TESTER);
+  // Same transaction as the coin movement - a settled commitment must never
+  // leave a claim behind, because that claim blocks the next cycle.
+  assert.equal(db.__has(CLAIM_PATH), false);
+});
+
+test("the cancelled amount comes from the assignment, not from a caller", async () => {
+  // A non-default stake must be returned in full and never rounded to 50.
+  const seed = claimedWorld({ logs: 3, locked: 120 });
+  seed[C1_PATH].commitmentAmount = 120;
+  const db = fakeDb(seed);
+
+  const outcome = await cancel(db);
+
+  assert.equal(outcome.amount, 120);
+  assert.equal(db.__read(WALLET_PATH).available, 120);
+  assert.equal(db.__read(WALLET_PATH).locked, 0);
+  assertWalletSound(db);
+});
+
+test("a second cancellation is refused and moves nothing", async () => {
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+  await cancel(db);
+  const after = { ...db.__read(WALLET_PATH) };
+
+  await assert.rejects(cancel(db), /already been settled/);
+
+  assert.deepEqual(db.__read(WALLET_PATH), after);
+  assertWalletSound(db);
+});
+
+test("a completed commitment cannot then be cancelled", async () => {
+  const db = fakeDb(claimedWorld({ logs: 14 }));
+  await verify(db);
+  const after = { ...db.__read(WALLET_PATH) };
+
+  await assert.rejects(cancel(db), /already been settled/);
+
+  assert.deepEqual(db.__read(WALLET_PATH), after);
+  assert.equal(db.__has(CANCEL_PATH), false);
+  assertWalletSound(db);
+});
+
+test("a forfeited commitment cannot then be cancelled", async () => {
+  const db = fakeDb(expiredWorld({ logs: 2 }));
+  await forfeit(db);
+  const after = { ...db.__read(WALLET_PATH) };
+
+  await assert.rejects(cancel(db), /already been settled/);
+
+  assert.deepEqual(db.__read(WALLET_PATH), after);
+  assert.equal(db.__has(CANCEL_PATH), false);
+  assertWalletSound(db);
+});
+
+test("a cancelled commitment cannot then be completed or forfeited", async () => {
+  const done = fakeDb(claimedWorld({ logs: 14 }));
+  await cancel(done);
+  // `completion.js` refuses a terminal status with its own wording ("cannot be
+  // verified"), before the shared unlock guard is ever reached. Either refusal
+  // is correct; what matters is that no second settlement lands.
+  await assert.rejects(verify(done), /cancelled/);
+  assert.equal(done.__has(`users/${TESTER}/coinTransactions/${unlockEntryId(C1)}`), false);
+  assertWalletSound(done);
+
+  const lost = fakeDb(expiredWorld({ logs: 2 }));
+  await cancel(lost);
+  await assert.rejects(forfeit(lost), /already been settled/);
+  assert.equal(lost.__has(`users/${TESTER}/coinTransactions/${forfeitEntryId(C1)}`), false);
+  assert.equal(lost.__read(WALLET_PATH).forfeitedTotal, 0);
+  assertWalletSound(lost);
+});
+
+test("a tester cannot cancel another tester's commitment", async () => {
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+  await assert.rejects(
+    cancel(db, { actorId: "someone_else" }),
+    /belongs to another tester/,
+  );
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.equal(db.__has(CANCEL_PATH), false);
+});
+
+test("an admin may cancel for a tester, and the coins go to the TESTER", async () => {
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+  const outcome = await cancel(db, { actorId: ADMIN, isAdmin: true });
+
+  assert.equal(outcome.testerId, TESTER);
+  assert.equal(db.__read(WALLET_PATH).available, 50);
+  assert.equal(db.__read(CANCEL_PATH).actorId, ADMIN);
+  assert.equal(db.__read(CANCEL_PATH).userId, TESTER);
+  assertWalletSound(db);
+});
+
+test("an assignment with no stake cannot be cancelled", async () => {
+  const seed = claimedWorld({ logs: 3, locked: 0, available: 50 });
+  seed[C1_PATH].lockTxId = null;
+  const db = fakeDb(seed);
+
+  await assert.rejects(cancel(db), /no committed coins/);
+  assert.equal(db.__has(CANCEL_PATH), false);
+});
+
+test("cancelling a missing assignment is not-found, not a silent no-op", async () => {
+  const db = fakeDb(world({ available: 50 }));
+  assert.equal(await codeOf(cancel(db, { assignmentId: "nope__x__c1" })), "not-found");
+});
+
+// ---- the callable wrapper -------------------------------------------------
+
+test("the cancel callable requires auth and an assignmentId", async () => {
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+  assert.equal(
+    await codeOf(cancelTestingAssignmentImpl(db, { data: { assignmentId: C1 } })),
+    "unauthenticated",
+  );
+  assert.equal(
+    await codeOf(cancelTestingAssignmentImpl(db, { auth: { uid: TESTER }, data: {} })),
+    "invalid-argument",
+  );
+});
+
+test("the cancel callable ignores every field except assignmentId", async () => {
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+
+  // Everything a hostile client might try to steer the settlement with.
+  const outcome = await cancelTestingAssignmentImpl(db, {
+    auth: { uid: TESTER },
+    data: {
+      assignmentId: C1,
+      amount: 5000,
+      commitmentAmount: 5000,
+      testerId: "someone_else",
+      appId: "other_app",
+      deltaAvailable: 5000,
+      available: 999999,
+      settlementTxId: "cancel_forged",
+    },
+  });
+
+  assert.equal(outcome.amount, 50);
+  assert.equal(outcome.testerId, TESTER);
+  assert.equal(outcome.settlementTxId, cancelEntryId(C1));
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.available, 50);
+  assert.equal(w.locked, 0);
+  assert.equal(db.__has("users/someone_else/wallet/balance"), false);
+  assertWalletSound(db);
+});
+
+test("the wallet invariant holds across the cancellation path", async () => {
+  const db = fakeDb(claimedWorld({ logs: 5 }));
+  assertWalletSound(db);
+  await cancel(db);
+  assertWalletSound(db);
+
+  const w = db.__read(WALLET_PATH);
+  assert.equal(
+    w.available + w.locked + w.forfeitedTotal,
+    w.purchasedTotal + w.adjustmentNet,
+  );
 });

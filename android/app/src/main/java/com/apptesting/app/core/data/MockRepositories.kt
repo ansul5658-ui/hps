@@ -312,6 +312,68 @@ internal class MockAssignmentRepository(private val store: MockStore) : Assignme
             completed = completes,
         )
     }
+
+    /**
+     * Mock cancellation. Mirrors `runCancelCommitment`: the SAME staked coins
+     * move from locked back to available, and the ledger entry is an `Unlock`
+     * with source `Cancellation` — not a new kind, exactly as on the server.
+     *
+     * The terminal-status check stands in for the server's
+     * `checkCancelEligible`, so a completed or forfeited commitment is refused
+     * here too and no second coin movement can happen.
+     */
+    override suspend fun cancelAssignment(assignmentId: String): CancelAssignmentResult {
+        val item = store.assignments.value.firstOrNull { it.id == assignmentId }
+            ?: return CancelAssignmentResult.Error("Assignment not found")
+        if (item.status.isTerminal) {
+            return CancelAssignmentResult.AlreadySettled(
+                "An assignment in \"${item.status}\" has already been settled.",
+            )
+        }
+        if (!item.hasCommitment) {
+            return CancelAssignmentResult.Error(
+                "That assignment has no committed coins to return.",
+            )
+        }
+
+        val amount = item.commitmentAmount
+        store.assignments.value = store.assignments.value.map {
+            if (it.id != assignmentId) {
+                it
+            } else {
+                it.copy(
+                    status = AssignmentStatus.Cancelled,
+                    settlementTxId = "cancel_$assignmentId",
+                )
+            }
+        }
+
+        val wallet = store.wallet.value
+        store.wallet.value = wallet.copy(
+            available = wallet.available + amount,
+            locked = (wallet.locked - amount).coerceAtLeast(0),
+            ledgerCount = wallet.ledgerCount + 1,
+            lastEntryId = "cancel_$assignmentId",
+        )
+        store.transactions.value = store.transactions.value + CoinTransaction(
+            id = "cancel_$assignmentId",
+            userId = item.testerUserId,
+            amount = amount,
+            kind = CoinTransactionKind.Unlock,
+            source = CoinTransactionSource.Cancellation,
+            deltaAvailable = amount,
+            deltaLocked = -amount,
+            reason = "Cancelled commitment for ${item.appId}",
+            relatedAssignmentId = assignmentId,
+            createdAtMillis = System.currentTimeMillis(),
+            schemaVersion = 2,
+        )
+
+        return CancelAssignmentResult.Cancelled(
+            assignmentId = assignmentId,
+            returnedAmount = amount,
+        )
+    }
 }
 
 /**

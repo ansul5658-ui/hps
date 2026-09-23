@@ -59,6 +59,11 @@ exports.previewEligibleTesters = assignments.previewEligibleTesters;
 // has genuinely elapsed with the requirement unmet.
 exports.joinTestingAssignment = commitments.joinTestingAssignment;
 exports.adminForfeitCommitment = commitments.adminForfeitCommitment;
+// Quitting early returns the stake rather than destroying it, so this is the
+// one settlement a tester may trigger for themselves. It is still
+// server-authoritative: the caller sends an assignment id, and the amount, the
+// tester and every balance delta are read from stored state.
+exports.cancelTestingAssignment = commitments.cancelTestingAssignment;
 
 // The 14-day testing engine. `recordTestingDay` is the ONLY writer of
 // `testingLogs` — rules refuse every client write to that collection — and it

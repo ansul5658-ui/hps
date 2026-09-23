@@ -2,15 +2,22 @@
  * The Testing Coin commitment lifecycle.
  *
  * A tester stakes coins on a testing assignment, gets the SAME coins back on
- * success, and loses them if the commitment window closes short. Three
- * movements, each its own transaction, each its own immutable ledger entry:
+ * success or on cancelling, and loses them if the commitment window closes
+ * short. Four movements, each its own transaction, each its own immutable
+ * ledger entry:
  *
  *     claim     available -50, locked +50     kind "lock"      source commitment
  *     complete  locked -50, available +50     kind "unlock"    source completion
+ *     cancel    locked -50, available +50     kind "unlock"    source cancellation
  *     forfeit   locked -50, forfeited +50     kind "forfeit"   source failure
  *
  * There is no reward and no partial refund. The coins that come back are the
  * coins that went in.
+ *
+ * EXACTLY ONE OF THE THREE SETTLEMENTS MAY LAND. Completion, cancellation and
+ * forfeiture each write a movement-specific deterministic ledger id with
+ * `tx.create` and each set a terminal status in the same transaction, so the
+ * second to arrive re-reads a terminal status and refuses.
  *
  * SECURITY MODEL
  *   * The client sends an appId. Nothing else it sends is trusted: the
@@ -56,6 +63,7 @@ const {
   COIN_SOURCE_COMMITMENT,
   COIN_SOURCE_COMPLETION,
   COIN_SOURCE_FAILURE,
+  COIN_SOURCE_CANCELLATION,
   ACTOR_KIND_USER,
   ACTOR_KIND_SYSTEM,
   ACTOR_KIND_ADMIN,
@@ -66,10 +74,12 @@ const {
   lockEntryId,
   unlockEntryId,
   forfeitEntryId,
+  cancelEntryId,
   nextCycle,
   checkClaimEligible,
   checkUnlockEligible,
   checkForfeitEligible,
+  checkCancelEligible,
 } = require("./lib/commitments");
 const { deriveWindow, isValidTimeZone } = require("./lib/testingDays");
 const { checkCommitmentExpiry } = require("./lib/expiry");
@@ -590,6 +600,165 @@ async function adminForfeitCommitmentImpl(db, request) {
 }
 
 // ---------------------------------------------------------------------------
+// Settlement: cancel
+// ---------------------------------------------------------------------------
+
+/**
+ * Cancel a live commitment, returning the staked coins, atomically.
+ *
+ * THE ONE SETTLEMENT PRIMITIVE FOR CANCELLATION, in the same sense as
+ * `runForfeitCommitment` and `stageUnlockSettlement`. The tester callable and
+ * the tests all come through here and none of them reimplements a coin
+ * movement.
+ *
+ * THE MOVEMENT IS AN UNLOCK, NOT A NEW KIND
+ * Cancelling returns the same coins to the same place completion does -
+ * `locked -N, available +N` - so it reuses `COIN_KIND_UNLOCK` and records the
+ * difference in `source` ("cancellation" rather than "completion"). Inventing
+ * a fifth kind would mean a fifth row in `KIND_DELTAS`, a fifth way to get the
+ * invariant arithmetic wrong, and reconciliation code that has to know both
+ * spellings of "give the stake back". The ledger entry still says exactly what
+ * happened, because `source` is stored alongside `kind`.
+ *
+ * WHY THE THREE SETTLEMENTS CANNOT OVERLAP
+ * All three write a deterministic, movement-specific ledger id with
+ * `tx.create`, and all three set a terminal status in the same transaction.
+ * `checkCancelEligible` refuses a terminal status - and "cancelled" is already
+ * in `TERMINAL_ASSIGNMENT_STATUSES`, so `checkUnlockEligible` and
+ * `checkForfeitEligible` refuse a cancelled assignment without needing a line
+ * of new code. Under a genuine race the status reads are simultaneous and
+ * decide nothing; what decides is that both transactions touch the same wallet
+ * document, so Firestore serializes them, and the loser then re-reads a
+ * terminal status and refuses. Exactly one settlement lands.
+ *
+ * AUTHORIZATION
+ * The tester who owns the commitment, or an admin. The owner check compares
+ * the stored `testerId` against the verified uid from the ID token; the client
+ * supplies an assignment id and nothing else, so it cannot cancel a stranger's
+ * commitment to move their coins.
+ */
+async function runCancelCommitment(
+  db,
+  { assignmentId, actorId, actorKind, isAdmin = false },
+) {
+  const assignmentRef = db.doc(assignmentPath(assignmentId));
+
+  return db.runTransaction(async (tx) => {
+    const assignmentSnap = await tx.get(assignmentRef);
+    if (!assignmentSnap.exists) {
+      throw new HttpsError("not-found", "That assignment no longer exists.");
+    }
+
+    const testerId = assignmentSnap.get("testerId");
+    const appId = assignmentSnap.get("appId");
+    // Server-side amount. The client never sends one, and this is the same
+    // field the lock was written from, so the return can never exceed the
+    // stake.
+    const amount = assignmentSnap.get("commitmentAmount");
+    const lockTxId = assignmentSnap.get("lockTxId");
+
+    // Ownership, re-verified inside the transaction against stored state.
+    if (!isAdmin && testerId !== actorId) {
+      throw new HttpsError(
+        "permission-denied",
+        "That commitment belongs to another tester.",
+      );
+    }
+
+    const eligible = checkCancelEligible({
+      status: assignmentSnap.get("status"),
+      lockTxId,
+    });
+    if (!eligible.ok) {
+      throw new HttpsError(eligible.code, eligible.message);
+    }
+
+    const { ref: walletRef, wallet } = await readWalletForUpdate(tx, db, testerId);
+    const entryId = cancelEntryId(assignmentId);
+
+    const staged = stageWalletEntry(tx, db, {
+      userId: testerId,
+      walletRef,
+      current: wallet,
+      entryId,
+      kind: COIN_KIND_UNLOCK,
+      source: COIN_SOURCE_CANCELLATION,
+      amount,
+      reason: `Cancelled commitment for ${appId}`,
+      assignmentId,
+      appId,
+      actorId,
+      actorKind,
+      idempotencyKey: entryId,
+    });
+
+    tx.update(assignmentRef, {
+      status: "cancelled",
+      settlementTxId: entryId,
+      cancelledAt: FieldValue.serverTimestamp(),
+      cancelledBy: actorId,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    // Same transaction as the coin movement, exactly as completion and
+    // forfeiture do: a settled commitment must never leave a claim stranded,
+    // because that claim is what blocks the tester starting a new cycle.
+    tx.delete(db.doc(claimPath(appId, testerId)));
+
+    return {
+      cancelled: true,
+      assignmentId,
+      testerId,
+      amount,
+      settlementTxId: entryId,
+      wallet: {
+        available: staged.wallet.available,
+        locked: staged.wallet.locked,
+        forfeitedTotal: staged.wallet.forfeitedTotal,
+      },
+    };
+  });
+}
+
+/**
+ * Guard + cancel. The caller supplies `{ assignmentId }` and nothing else.
+ *
+ * An admin may cancel on a tester's behalf (support case: a tester who cannot
+ * reach the app). That is safe in a way admin forfeiture is not, because the
+ * movement returns coins rather than destroying them - which is why this does
+ * not carry the extra "and the window must really have elapsed" gate that
+ * `adminForfeitCommitment` does.
+ */
+async function cancelTestingAssignmentImpl(db, request) {
+  const uid = requireAuth(request);
+  const assignmentId = requireDocId(
+    request.data && request.data.assignmentId,
+    "assignmentId",
+  );
+
+  // Admin status is a server lookup, never a client claim. A non-admin simply
+  // proceeds as themselves and is then held to the ownership check.
+  let isAdmin = false;
+  try {
+    await requireAdmin(db, uid);
+    isAdmin = true;
+  } catch (err) {
+    isAdmin = false;
+  }
+
+  const outcome = await runCancelCommitment(db, {
+    assignmentId,
+    actorId: uid,
+    actorKind: isAdmin ? ACTOR_KIND_ADMIN : ACTOR_KIND_USER,
+    isAdmin,
+  });
+  logger.info(
+    `${isAdmin ? "admin" : "tester"} ${uid} cancelled ${assignmentId}: ` +
+      `${outcome.amount} coins returned to ${outcome.testerId}`,
+  );
+  return outcome;
+}
+
+// ---------------------------------------------------------------------------
 // Callables
 // ---------------------------------------------------------------------------
 
@@ -614,14 +783,28 @@ const adminForfeitCommitment = onCall({ region: REGION }, (request) =>
   adminForfeitCommitmentImpl(getFirestore(), request),
 );
 
+/**
+ * Callable: cancel a live commitment and return the staked coins.
+ *
+ * Input is `{ assignmentId }` only. The amount, the tester and every balance
+ * delta are derived server-side, and the caller must either own the commitment
+ * or be an admin.
+ */
+const cancelTestingAssignment = onCall({ region: REGION }, (request) =>
+  cancelTestingAssignmentImpl(getFirestore(), request),
+);
+
 module.exports = {
   joinTestingAssignment,
   adminForfeitCommitment,
+  cancelTestingAssignment,
   // Exported for tests and for composition - no Functions runtime required.
   joinTestingAssignmentImpl,
   adminForfeitCommitmentImpl,
+  cancelTestingAssignmentImpl,
   runClaimCommitment,
   runForfeitCommitment,
+  runCancelCommitment,
   stageUnlockSettlement,
   countQualifyingDays,
   claimPath,

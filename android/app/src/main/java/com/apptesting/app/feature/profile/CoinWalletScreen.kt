@@ -241,12 +241,54 @@ private fun WalletBreakdown(wallet: CoinWallet) {
                 value = wallet.forfeitedTotal,
                 caption = "Lost from commitments that were not completed",
             )
-            // Testing Coins are not money. Saying so once, here, is the honest
-            // place for it — this is the screen a user opens expecting a balance.
+            val grantedNet = wallet.purchasedTotal + wallet.adjustmentNet
+            if (grantedNet > 0) {
+                BreakdownRow(
+                    label = "Granted",
+                    value = grantedNet,
+                    caption = "Total play-money Testing Coins granted to your account",
+                )
+            }
+        }
+    }
+
+    Spacer(Modifier.height(4.dp))
+
+    // Explanation card
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                text = "Testing Coins are a commitment, not cash. They cannot be " +
-                    "withdrawn or transferred.",
+                text = "How Testing Coins Work",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "• Joining a test locks 50 Testing Coins from your available balance.",
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "• Completing 14 qualifying testing days unlocks and returns your exact 50 committed coins.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "• Failed or expired commitments forfeit the 50 committed coins.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "• Testing Coins are a commitment mechanism, not cash. They cannot be withdrawn or transferred.",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }

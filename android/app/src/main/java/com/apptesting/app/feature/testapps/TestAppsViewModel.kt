@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.apptesting.app.core.data.AppRepository
 import com.apptesting.app.core.data.AssignmentRepository
+import com.apptesting.app.core.data.CancelAssignmentResult
 import com.apptesting.app.core.data.ClaimAssignmentResult
 import com.apptesting.app.core.data.CoinRepository
 import com.apptesting.app.core.data.LogDayResult
@@ -76,6 +77,16 @@ class TestAppsViewModel(
      * avoids a redundant round trip on a double tap.
      */
     private val checkingIn = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /**
+     * Assignments with a cancellation request in flight.
+     *
+     * A UI-level courtesy only, exactly like [checkingIn]. The guarantee is the
+     * server's deterministic `cancel_{assignmentId}` ledger id written with
+     * `tx.create`, which makes a second unlock impossible no matter how many
+     * requests arrive.
+     */
+    private val cancelling = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     private val filter = MutableStateFlow(TestFilter.All)
     private val _state = MutableStateFlow<TestAppsUiState>(TestAppsUiState.Loading)
@@ -160,6 +171,45 @@ class TestAppsViewModel(
         }
     }
 
+
+    /**
+     * Cancel a live commitment, returning the staked coins.
+     *
+     * Same discipline as [onCheckIn] and [onClaimAssignment]: no local balance
+     * change. The returned amount is used only to word the confirmation
+     * message; the wallet chip moves when the wallet listener reports the
+     * server's write.
+     *
+     * The in-flight guard makes a double tap a single round trip, and the
+     * server refuses a second settlement regardless — which is why an
+     * already-settled result is reported as information rather than an error.
+     */
+    fun onCancelAssignment(assignmentId: String) {
+        if (!cancelling.add(assignmentId)) return
+        viewModelScope.launch {
+            try {
+                when (val result = assignments.cancelAssignment(assignmentId)) {
+                    is CancelAssignmentResult.Cancelled ->
+                        _events.emit(
+                            TestAppsEvent.Message(
+                                "Commitment cancelled — ${result.returnedAmount} coins returned " +
+                                    "to your available balance.",
+                            ),
+                        )
+                    is CancelAssignmentResult.AlreadySettled ->
+                        _events.emit(
+                            TestAppsEvent.Message(
+                                "This commitment has already been settled.",
+                            ),
+                        )
+                    is CancelAssignmentResult.Error ->
+                        _events.emit(TestAppsEvent.Message(result.message))
+                }
+            } finally {
+                cancelling.remove(assignmentId)
+            }
+        }
+    }
 
     /**
      * Commit Testing Coins to an app and claim a testing assignment.

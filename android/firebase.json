@@ -10,20 +10,26 @@
       "ignore": [
         "node_modules",
         ".git",
-        "test",
+        ".runtimeconfig.json",
         "firebase-debug.log",
-        "firebase-debug.*.log"
+        "firebase-debug.*.log",
+        "test",
+        "test-emulator",
+        "scripts"
       ]
     }
   ],
   "emulators": {
     "auth": {
+      "host": "127.0.0.1",
       "port": 9099
     },
     "firestore": {
+      "host": "127.0.0.1",
       "port": 8080
     },
     "functions": {
+      "host": "127.0.0.1",
       "port": 5001
     },
     "singleProjectMode": false,

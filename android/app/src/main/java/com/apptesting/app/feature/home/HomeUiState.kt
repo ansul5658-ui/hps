@@ -40,11 +40,13 @@ data class HomeAssignmentRow(
     /**
      * Testing Coins STAKED on this assignment.
      *
-     * Not a payout. The Home card deliberately does not render this as
-     * "+N on completion" — completing returns the same coins, so that copy
-     * described a reward the product does not give.
+     * Not a payout. The Home card renders this as committed coins that are
+     * returned upon completion.
      */
     val commitmentAmount: Int,
+    val lastEligibleDayKey: String? = null,
+    val nextCheckInAtMillis: Long? = null,
+    val hasCommitment: Boolean = false,
 ) {
     val progress: Float
         get() = if (daysRequired <= 0) 0f else daysCompleted.toFloat() / daysRequired

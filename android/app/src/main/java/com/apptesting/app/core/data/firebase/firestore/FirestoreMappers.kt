@@ -198,6 +198,7 @@ internal fun AssignmentStatus.serialize(): String = when (this) {
     AssignmentStatus.WaitingForVerification -> "waitingForVerification"
     AssignmentStatus.Completed -> "completed"
     AssignmentStatus.Failed -> "failed"
+    AssignmentStatus.Cancelled -> "cancelled"
     AssignmentStatus.Missed -> "missed"
 }
 
@@ -217,6 +218,7 @@ internal fun parseAssignmentStatus(raw: String?): AssignmentStatus = when (raw) 
     "waitingForVerification" -> AssignmentStatus.WaitingForVerification
     "completed" -> AssignmentStatus.Completed
     "failed" -> AssignmentStatus.Failed
+    "cancelled" -> AssignmentStatus.Cancelled
     "missed" -> AssignmentStatus.Missed
     else -> AssignmentStatus.Ready
 }

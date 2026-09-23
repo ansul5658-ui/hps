@@ -191,6 +191,9 @@ class HomeViewModel(
                     // repeated: a reward-era assignment staked nothing, so it
                     // must not appear here as a live 50-coin commitment.
                     commitmentAmount = a.displayedCommitmentAmount,
+                    lastEligibleDayKey = a.lastEligibleDayKey,
+                    nextCheckInAtMillis = a.nextCheckInAtMillis,
+                    hasCommitment = a.hasCommitment,
                 )
             }
         return HomeUiState.Content(

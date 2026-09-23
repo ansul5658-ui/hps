@@ -124,8 +124,23 @@ internal class FirebaseAuthUserRepository(
             "Demo sign-in is only available against the local Firebase emulator."
         }
         val result = auth.signInAnonymously().await()
-        val uid = result.user?.uid ?: error("Auth emulator returned no user.")
-        Log.w(TAG, "[EMULATOR] anonymous sign-in uid=$uid")
+        val user = result.user ?: error("Auth emulator returned no user.")
+        Log.w(TAG, "[EMULATOR] anonymous sign-in uid=${user.uid}")
+
+        // The same profile write the Google path performs, and deliberately the
+        // SAME function rather than a parallel one.
+        //
+        // Without this the emulator user had an Auth record but no
+        // `users/{uid}` document, so `joinTestingAssignment` refused it with
+        // "You need a profile before testing." — a tester created by the debug
+        // path could sign in and then do nothing. Calling `upsertProfile` is
+        // what keeps the demo user's shape identical to a real one: it writes
+        // only uid, displayName, email, photoUrl and the timestamps, which is
+        // exactly the field set `userCreateAllowed` permits in the Firestore
+        // rules. role, isSuspended, coinBalance and trustScore are absent here
+        // for the same reason they are absent there — a client may never write
+        // them, and this path must not become the exception that can.
+        upsertProfile(user)
         Unit
     }
 

@@ -489,3 +489,105 @@ test("the commitment rules did not open an arbitrary sibling collection", async 
   // A deeper path under activeClaims falls through to the catch-all deny.
   await assertFails(setDoc(doc(db, `activeClaims/${A_CLAIM}/sub/forged`), { x: 1 }));
 });
+
+// ---------------------------------------------------------------------------
+// Cancellation
+//
+// Cancelling is the one settlement a TESTER may trigger, which makes it the
+// one most worth proving the client still cannot perform for itself. The
+// callable is the only door; every field the settlement writes must be
+// refused here.
+// ---------------------------------------------------------------------------
+
+test("a tester cannot cancel their own commitment by writing the document", async () => {
+  const db = asUser(ALICE);
+  // The whole settlement in one write — status, settlement id and timestamps.
+  await assertFails(
+    updateDoc(doc(db, ASSIGNMENT(A_C1)), {
+      status: "cancelled",
+      settlementTxId: `cancel_${A_C1}`,
+      cancelledAt: serverTimestamp(),
+      cancelledBy: ALICE,
+      updatedAt: serverTimestamp(),
+    }),
+  );
+  // And each cancellation-specific field on its own, so a narrower write
+  // cannot slip through a rule that only inspected the combination.
+  await assertFails(updateDoc(doc(db, ASSIGNMENT(A_C1)), { cancelledAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db, ASSIGNMENT(A_C1)), { cancelledBy: ALICE }));
+  await assertFails(updateDoc(doc(db, ASSIGNMENT(A_C1)), { settlementTxId: `cancel_${A_C1}` }));
+});
+
+test("a tester cannot mint the cancellation ledger entry that returns the coins", async () => {
+  const db = asUser(ALICE);
+  // The entry the server writes with tx.create. Forging it would credit 50
+  // available coins without any commitment ending.
+  await assertFails(
+    setDoc(doc(db, `users/${ALICE}/coinTransactions/cancel_${A_C1}`), {
+      userId: ALICE,
+      kind: "unlock",
+      source: "cancellation",
+      amount: 50,
+      deltaAvailable: 50,
+      deltaLocked: -50,
+      deltaForfeited: 0,
+      assignmentId: A_C1,
+      schemaVersion: 2,
+      createdAt: serverTimestamp(),
+    }),
+  );
+});
+
+test("a tester cannot apply the cancellation refund to their own wallet", async () => {
+  const db = asUser(ALICE);
+  await assertFails(
+    setDoc(doc(db, `users/${ALICE}/wallet/balance`), {
+      available: 50,
+      locked: 0,
+      forfeitedTotal: 0,
+      purchasedTotal: 0,
+      adjustmentNet: 50,
+      schemaVersion: 2,
+    }),
+  );
+  await assertFails(
+    updateDoc(doc(db, `users/${ALICE}/wallet/balance`), { available: 50, locked: 0 }),
+  );
+});
+
+test("a tester cannot release the active claim that cancellation removes", async () => {
+  // Deleting the claim without a settlement would free a second commitment on
+  // the same app while the first still holds the coins.
+  await assertFails(deleteDoc(doc(asUser(ALICE), CLAIM(A_CLAIM))));
+});
+
+test("cancelling someone else's commitment is refused at every field", async () => {
+  const db = asUser(BOB);
+  await assertFails(
+    updateDoc(doc(db, ASSIGNMENT(A_C1)), { status: "cancelled", cancelledBy: BOB }),
+  );
+  await assertFails(deleteDoc(doc(db, CLAIM(A_CLAIM))));
+  await assertFails(
+    setDoc(doc(db, `users/${ALICE}/coinTransactions/cancel_${A_C1}`), {
+      kind: "unlock",
+      source: "cancellation",
+      amount: 50,
+    }),
+  );
+});
+
+test("an admin cannot write a cancellation directly either", async () => {
+  // isAdmin() in these rules grants READS only. The admin cancellation path is
+  // the callable, which re-verifies the role server-side.
+  const db = asUser("admin1");
+  await assertFails(
+    updateDoc(doc(db, ASSIGNMENT(A_C1)), {
+      status: "cancelled",
+      settlementTxId: `cancel_${A_C1}`,
+    }),
+  );
+  await assertFails(deleteDoc(doc(db, CLAIM(A_CLAIM))));
+  await assertFails(
+    setDoc(doc(db, `users/${ALICE}/coinTransactions/cancel_${A_C1}`), { amount: 50 }),
+  );
+});

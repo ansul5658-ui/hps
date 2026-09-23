@@ -67,6 +67,9 @@ function unlockEntryId(assignmentId) {
 function forfeitEntryId(assignmentId) {
   return `forfeit_${assignmentId}`;
 }
+function cancelEntryId(assignmentId) {
+  return `cancel_${assignmentId}`;
+}
 
 /** True when an assignment can no longer be settled. */
 function isTerminalStatus(status) {
@@ -257,6 +260,47 @@ function checkUnlockEligible({ status, daysRequired, qualifyingDays, lockTxId })
  * inputs here, and none should be added: this function takes the assignment's
  * own recorded state and the server clock, and nothing else.
  */
+/**
+ * May this commitment be cancelled, giving the staked coins back?
+ *
+ * Deliberately the LOOSEST of the three settlement gates, and deliberately so
+ * for one reason: cancelling returns the tester's own coins to them. A wrong
+ * `false` here traps someone in a commitment they want out of; a wrong `true`
+ * costs them nothing, because the coins land back in `available`. That is the
+ * opposite risk profile to `checkForfeitEligible`, which guards a destructive
+ * movement and therefore refuses on every uncertainty.
+ *
+ * So there is no window check, no day-count check and no deadline here. A
+ * tester may walk away on day 1 or day 13; the product rule is that quitting
+ * early returns the stake, not that quitting is only allowed at certain times.
+ *
+ * What it DOES refuse is settling twice. `isTerminalStatus` covers completed,
+ * failed, missed and cancelled, so a commitment that already settled by any
+ * route cannot then be cancelled into a second coin movement. That check is
+ * the advisory half of the guarantee; the binding half is the deterministic
+ * ledger id written with `tx.create`, which holds even if two transactions
+ * read a non-terminal status at the same instant.
+ */
+function checkCancelEligible({ status, lockTxId }) {
+  if (isTerminalStatus(status)) {
+    return {
+      ok: false,
+      code: "failed-precondition",
+      message: `An assignment in "${status}" has already been settled.`,
+    };
+  }
+  if (!lockTxId) {
+    // Reward-era assignments staked nothing. There is no coin movement to
+    // make, so cancelling one is meaningless rather than merely disallowed.
+    return {
+      ok: false,
+      code: "failed-precondition",
+      message: "That assignment has no committed coins to return.",
+    };
+  }
+  return { ok: true };
+}
+
 function checkForfeitEligible({
   status,
   lockTxId,
@@ -334,11 +378,13 @@ module.exports = {
   lockEntryId,
   unlockEntryId,
   forfeitEntryId,
+  cancelEntryId,
   isTerminalStatus,
   cycleOf,
   nextCycle,
   checkClaimEligible,
   checkUnlockEligible,
   checkForfeitEligible,
+  checkCancelEligible,
   windowDeadlineMillis,
 };

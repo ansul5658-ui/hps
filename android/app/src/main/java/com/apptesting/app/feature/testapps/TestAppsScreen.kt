@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.Savings
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -51,6 +52,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -149,6 +151,7 @@ fun TestAppsScreen(
                     onStartQuickTest = viewModel::onStartQuickTest,
                     onClaim = viewModel::onClaimAssignment,
                     onCheckIn = viewModel::onCheckIn,
+                    onCancel = viewModel::onCancelAssignment,
                 )
             }
         }
@@ -242,6 +245,7 @@ private fun AppsContent(
     onStartQuickTest: (String) -> Unit,
     onClaim: (String) -> Unit,
     onCheckIn: (String) -> Unit,
+    onCancel: (String) -> Unit,
 ) {
     val filteredRows = remember(state.rows, searchQuery) {
         if (searchQuery.isBlank()) {
@@ -349,6 +353,7 @@ private fun AppsContent(
                     availableCoins = state.wallet.available,
                     onClaim = { onClaim(row.appId) },
                     onCheckIn = { row.assignmentId?.let(onCheckIn) },
+                    onCancel = { row.assignmentId?.let(onCancel) },
                 )
             }
         }
@@ -564,6 +569,7 @@ private fun TestAppCard(
     availableCoins: Int,
     onClaim: () -> Unit,
     onCheckIn: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -603,6 +609,7 @@ private fun TestAppCard(
                     AssignmentStatus.WaitingForVerification -> "Verification" to StatusTone.Warning
                     AssignmentStatus.Completed -> "Completed" to StatusTone.Success
                     AssignmentStatus.Failed -> "Forfeited" to StatusTone.Danger
+                    AssignmentStatus.Cancelled -> "Cancelled" to StatusTone.Neutral
                     AssignmentStatus.Missed -> "Expired" to StatusTone.Danger
                 }
                 StatusPill(text = pillLabel, tone = tone)
@@ -693,6 +700,7 @@ private fun TestAppCard(
                 commitmentAmount = AppConfig.DEFAULT_COMMITMENT_AMOUNT,
                 onClaim = onClaim,
                 onCheckIn = onCheckIn,
+                onCancel = onCancel,
             )
         }
     }
@@ -745,6 +753,7 @@ private fun ActionRow(
     commitmentAmount: Int,
     onClaim: () -> Unit,
     onCheckIn: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     when (status) {
         // No commitment on this app yet. The button states the stake up front,
@@ -803,6 +812,58 @@ private fun ActionRow(
                     Text("Log today's testing", fontWeight = FontWeight.Bold)
                 }
             }
+
+            // Ending the commitment early. Deliberately a low-emphasis text
+            // button directly under the primary action: it must be findable
+            // without competing with the thing the tester is here to do.
+            var confirming by remember { mutableStateOf(false) }
+
+            TextButton(
+                onClick = { confirming = true },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Cancel commitment")
+            }
+
+            if (confirming) {
+                AlertDialog(
+                    onDismissRequest = { confirming = false },
+                    title = { Text("Cancel this commitment?") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Testing will stop for this app.")
+                            // Stated plainly and positively. Cancelling is not
+                            // a penalty — the stake comes back — and a vague
+                            // warning here would push testers into abandoning
+                            // the commitment instead, which forfeits it.
+                            Text(
+                                if (commitmentAmount > 0) {
+                                    "Your $commitmentAmount committed coins will be " +
+                                        "returned to your available balance."
+                                } else {
+                                    "No coins are committed to this assignment."
+                                },
+                            )
+                            Text("You can't check in on this assignment afterwards.")
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                confirming = false
+                                onCancel()
+                            },
+                        ) {
+                            Text("Cancel commitment", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { confirming = false }) {
+                            Text("Keep testing")
+                        }
+                    },
+                )
+            }
         }
 
         AssignmentStatus.WaitingForVerification -> {
@@ -815,7 +876,11 @@ private fun ActionRow(
 
         AssignmentStatus.Completed -> {
             InfoPanel(
-                text = "Completed — thank you for participating in testing!",
+                text = if (commitmentAmount > 0) {
+                    "Completed — $commitmentAmount committed coins unlocked and returned to your available balance. Thank you for testing!"
+                } else {
+                    "Completed — thank you for participating in testing!"
+                },
                 container = MaterialTheme.colorScheme.surfaceVariant,
                 content = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -835,6 +900,20 @@ private fun ActionRow(
                 },
                 container = MaterialTheme.colorScheme.errorContainer,
                 content = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
+        // Ended early, stake returned. Deliberately NOT an error container:
+        // nothing went wrong and nothing was lost, and colouring it like the
+        // forfeited case would tell the tester they had been penalised.
+        AssignmentStatus.Cancelled -> {
+            InfoPanel(
+                text = if (commitmentAmount > 0) {
+                    "Cancelled — $commitmentAmount coins returned to your available balance."
+                } else {
+                    "Cancelled — this testing commitment was ended early."
+                },
+                container = MaterialTheme.colorScheme.surfaceVariant,
+                content = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         AssignmentStatus.Missed -> {

@@ -110,6 +110,39 @@ interface AssignmentRepository {
      * Safe to call twice: a same-day repeat is an idempotent no-op.
      */
     suspend fun recordDayOfTesting(assignmentId: String): LogDayResult
+
+    /**
+     * End a live commitment early, returning the staked coins.
+     *
+     * Takes an assignmentId and nothing else, for the same reason
+     * [claimAssignment] takes only an appId: the amount and the tester are
+     * read from stored state server-side. A client that could name an amount
+     * could return more than it staked.
+     *
+     * This never writes Firestore. Rules refuse every client write to
+     * `testingAssignments`, `activeClaims` and the wallet, so the
+     * `cancelTestingAssignment` callable is the only door.
+     */
+    suspend fun cancelAssignment(assignmentId: String): CancelAssignmentResult
+}
+
+sealed interface CancelAssignmentResult {
+    /**
+     * The commitment was cancelled. [returnedAmount] coins moved from locked
+     * back to available; as everywhere else, the wallet listener reports the
+     * new balance — this carries the amount only so the screen can say what
+     * happened.
+     */
+    data class Cancelled(val assignmentId: String, val returnedAmount: Int) : CancelAssignmentResult
+
+    /**
+     * The commitment had already settled — completed, forfeited or cancelled.
+     * Not a failure worth alarming the user about: the coins are wherever that
+     * settlement put them, and no second movement happened.
+     */
+    data class AlreadySettled(val message: String) : CancelAssignmentResult
+
+    data class Error(val message: String) : CancelAssignmentResult
 }
 
 sealed interface ClaimAssignmentResult {

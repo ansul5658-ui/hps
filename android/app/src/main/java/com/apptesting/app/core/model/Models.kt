@@ -242,12 +242,30 @@ enum class AssignmentStatus {
      * normal end state for an abandoned commitment.
      */
     Failed,
+
+    /**
+     * The tester (or an admin on their behalf) ended the commitment early and
+     * the staked coins were RETURNED.
+     *
+     * Written by the server as `"cancelled"` by `cancelTestingAssignment`. It
+     * is a settled, terminal state and must never read as an active
+     * commitment: no check-in, no progress, no "N committed" chip.
+     *
+     * This value exists for the same reason [Failed] does. `"cancelled"` was
+     * already a terminal status server-side and already in
+     * `TERMINAL_ASSIGNMENT_STATUSES`, but this client had no case for it, so
+     * `parseAssignmentStatus` fell through to [Ready] - an assignment whose 50
+     * coins had just been returned would have been shown as ready to start,
+     * still inviting a check-in that the server would then refuse.
+     */
+    Cancelled,
     Missed,
 }
 
 /** True once an assignment can no longer change - mirrors TERMINAL_ASSIGNMENT_STATUSES. */
 val AssignmentStatus.isTerminal: Boolean
     get() = this == AssignmentStatus.Completed ||
+        this == AssignmentStatus.Cancelled ||
         this == AssignmentStatus.Failed ||
         this == AssignmentStatus.Missed
 
