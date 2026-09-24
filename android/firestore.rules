@@ -369,6 +369,26 @@ service cloud.firestore {
     // on the same app while the first still holds coins, or clear the guard
     // that makes double-claiming impossible. The claim is removed only by the
     // settlement paths, inside the same transaction that moves the coins.
+    // Tester feedback (Batch 9C) - one document per testing cycle, keyed by
+    // the cycle's assignment id. Written ONLY by the submitTestingFeedback
+    // callable, which derives the tester, app, developer and cycle from the
+    // stored assignment and checks the tester actually tested it.
+    //
+    // Reads: the author and admins only. The developer reads feedback on
+    // their app through getAppFeedback, which strips the tester's identity -
+    // that is the product rule, and a direct read here would hand them
+    // `testerId`. As with assignments and logs, a missing document is not
+    // tolerated: the id is deterministic, so a permissive read of an absent
+    // one would reveal whether a given user tested a given app.
+    //
+    // NO CLIENT WRITES. Feedback is immutable once submitted - no edit, no
+    // delete, for the author or anyone else. A client create would skip the
+    // eligibility check; an update would rewrite what a developer was told.
+    match /feedback/{assignmentId} {
+      allow read: if isAdmin()
+        || (signedIn() && resource.data.testerId == request.auth.uid);
+      allow write: if false;
+    }
     match /activeClaims/{claimId} {
       allow read: if isAdmin() || (signedIn() && resource.data.testerId == request.auth.uid);
       allow write: if false;

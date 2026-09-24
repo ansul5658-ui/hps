@@ -29,6 +29,7 @@ const systemHealth = require("./systemHealth");
 const wallet = require("./wallet");
 const quickTests = require("./quickTests");
 const progress = require("./progress");
+const feedback = require("./feedback");
 
 // Admin-only callables.
 exports.adminSetAppStatus = adminOps.adminSetAppStatus;
@@ -84,6 +85,14 @@ exports.recordTestingDay = testingDays.recordTestingDay;
 // derive progress and misses exactly as settlement does, and write nothing.
 exports.getMyCommitmentStatus = progress.getMyCommitmentStatus;
 exports.getMemberProgress = progress.getMemberProgress;
+
+// Tester feedback - one immutable record per testing cycle. Writes only to
+// `feedback`; nothing here can touch coins, days, status or capacity. The
+// developer's read is anonymous; `adminListFeedback` is admin-only.
+exports.submitTestingFeedback = feedback.submitTestingFeedback;
+exports.getMyTestingFeedback = feedback.getMyTestingFeedback;
+exports.getAppFeedback = feedback.getAppFeedback;
+exports.adminListFeedback = feedback.adminListFeedback;
 
 // Automatic expiry. `evaluateExpiredCommitments` is the ONLY scheduled writer
 // of money in this project, and it deliberately owns none of the arithmetic:
