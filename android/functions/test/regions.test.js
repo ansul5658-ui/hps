@@ -40,7 +40,7 @@ for (const name of SCHEDULED) {
 
 test("every non-scheduled function stays in REGION", () => {
   const others = Object.entries(functions).filter(([name]) => !SCHEDULED.includes(name));
-  assert.equal(others.length, 19);
+  assert.equal(others.length, 21);
   for (const [name, fn] of others) {
     assert.deepEqual(fn.__endpoint.region, [REGION], `${name} left ${REGION}`);
   }

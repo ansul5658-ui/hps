@@ -28,6 +28,7 @@ const expiry = require("./expiry");
 const systemHealth = require("./systemHealth");
 const wallet = require("./wallet");
 const quickTests = require("./quickTests");
+const progress = require("./progress");
 
 // Admin-only callables.
 exports.adminSetAppStatus = adminOps.adminSetAppStatus;
@@ -76,6 +77,13 @@ exports.cancelTestingAssignment = commitments.cancelTestingAssignment;
 // upside — and "qualifyingDays is server-authoritative" is only meaningful
 // with exactly one authority.
 exports.recordTestingDay = testingDays.recordTestingDay;
+
+// Read-only status for the app. `getMyCommitmentStatus` answers for the
+// verified caller only; `getMemberProgress` returns an anonymous projection of
+// an app's current testers to its developer, those testers and admins. Both
+// derive progress and misses exactly as settlement does, and write nothing.
+exports.getMyCommitmentStatus = progress.getMyCommitmentStatus;
+exports.getMemberProgress = progress.getMemberProgress;
 
 // Automatic expiry. `evaluateExpiredCommitments` is the ONLY scheduled writer
 // of money in this project, and it deliberately owns none of the arithmetic:

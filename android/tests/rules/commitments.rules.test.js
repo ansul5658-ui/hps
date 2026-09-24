@@ -476,6 +476,37 @@ test("a tester cannot touch another tester's assignment at all", async () => {
   await assertFails(getDoc(doc(db, ASSIGNMENT(B_C1))));
 });
 
+// Batch 9B: fellow testers see each other's progress ONLY through the
+// getMemberProgress callable's anonymous projection. These pin that the rules
+// were not widened to make that easier - every bulk path to a co-member's
+// commitment, logs, profile or wallet stays closed.
+test("a co-member of the same app cannot list or read another tester's data", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, `testingLogs/${B_C1}__2026-03-02`), {
+      assignmentId: B_C1,
+      testerId: BOB,
+      appId: APP,
+      dayKey: "2026-03-02",
+    });
+    await setDoc(doc(db, `users/${BOB}/wallet/balance`), {
+      available: 0,
+      locked: 50,
+      forfeitedTotal: 0,
+    });
+  });
+  const db = asUser(ALICE);
+  await assertFails(getDocs(query(collection(db, "testingAssignments"), where("appId", "==", APP))));
+  await assertFails(getDocs(query(collection(db, "testingLogs"), where("assignmentId", "==", B_C1))));
+  await assertFails(getDoc(doc(db, `testingLogs/${B_C1}__2026-03-02`)));
+  await assertFails(getDoc(doc(db, `users/${BOB}`)));
+  await assertFails(getDoc(doc(db, `users/${BOB}/wallet/balance`)));
+  // Her own, scoped to herself, still works.
+  await assertSucceeds(
+    getDocs(query(collection(db, "testingAssignments"), where("testerId", "==", ALICE))),
+  );
+});
+
 test("an admin cannot write assignment money fields from the client", async () => {
   const db = asUser("admin1");
   await assertFails(updateDoc(doc(db, ASSIGNMENT(A_C1)), { status: "completed" }));
