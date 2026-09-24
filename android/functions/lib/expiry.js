@@ -26,7 +26,10 @@
  * from someone who did the work.
  */
 
-const { COMMITMENT_DAYS_REQUIRED } = require("./constants");
+const {
+  COMMITMENT_DAYS_REQUIRED,
+  FAILURE_REASON_TOO_MANY_MISSES,
+} = require("./constants");
 const {
   dayKeyInZone,
   isValidDayKey,
@@ -35,6 +38,7 @@ const {
   daysBetween,
 } = require("./testingDays");
 const { deriveEffectiveWindow } = require("./outages");
+const { missRuleApplies, countMissedDays } = require("./misses");
 
 /**
  * Should this commitment be forfeited, as of `nowMillis`?
@@ -59,6 +63,13 @@ function checkCommitmentExpiry({
   daysRequired = COMMITMENT_DAYS_REQUIRED,
   outageRecords = [],
   nowMillis,
+  // The miss rule. Both are needed to judge it: `allowedMisses` as pinned on
+  // the assignment (absent on a legacy claim, which switches the rule off),
+  // and the day keys of the testing logs the server wrote. A caller that
+  // passes `allowedMisses` without the logs gets no miss verdict at all -
+  // fail closed, since a miss count cannot be guessed.
+  allowedMisses = null,
+  loggedDayKeys = null,
 }) {
   // A zone that this runtime cannot read means no day boundary can be
   // derived. Refusing is the only safe answer - guessing UTC here would move
@@ -89,7 +100,7 @@ function checkCommitmentExpiry({
 
   // THE single window check, reused. The outage credit reaches it only as a
   // later `lastEligibleDayKey`; the closing rule itself is untouched.
-  const verdict = checkWindowExpired({
+  const windowVerdict = checkWindowExpired({
     status,
     lockTxId,
     lastEligibleDayKey: effective.effectiveLastEligibleDayKey,
@@ -98,8 +109,44 @@ function checkCommitmentExpiry({
     daysRequired,
   });
 
+  // THE MISS RULE, layered on the window rule rather than beside it.
+  //
+  // Judged only for a commitment that is otherwise live and short of its
+  // requirement - a settled one, one with no stake, a corrupt window or a met
+  // requirement all keep the window verdict. When it applies and the misses
+  // exceed the limit, the commitment is expired NOW, whether or not the window
+  // has closed: the third miss is what ended it, so that is the reason
+  // recorded, even if a late sweep only reaches it after the window closed.
+  let missedDays = null;
+  let verdict = windowVerdict;
+  const judgeable = !["alreadySettled", "noCommitment", "invalidWindow", "requirementMet"]
+    .includes(windowVerdict.reason);
+  if (missRuleApplies(allowedMisses) && Array.isArray(loggedDayKeys) && judgeable) {
+    missedDays = countMissedDays({
+      firstEligibleDayKey,
+      lastEligibleDayKey: effective.effectiveLastEligibleDayKey,
+      todayKey,
+      loggedDayKeys,
+      outageDayKeys: effective.outageDayKeys,
+    });
+    const days = Number.isInteger(qualifyingDays) && qualifyingDays > 0 ? qualifyingDays : 0;
+    const required = Number.isInteger(daysRequired) && daysRequired > 0
+      ? daysRequired
+      : COMMITMENT_DAYS_REQUIRED;
+    if (missedDays !== null && missedDays > allowedMisses && days < required) {
+      verdict = {
+        expired: true,
+        reason: FAILURE_REASON_TOO_MANY_MISSES,
+        qualifyingDays: days,
+        daysRequired: required,
+      };
+    }
+  }
+
   return {
     ...verdict,
+    missedDays,
+    allowedMisses: missRuleApplies(allowedMisses) ? allowedMisses : null,
     todayKey,
     timeZone,
     lastEligibleDayKey,

@@ -28,6 +28,8 @@
 const {
   COMMITMENT_DAYS_REQUIRED,
   COMMITMENT_WINDOW_DAYS,
+  LEGACY_COMMITMENT_WINDOW_DAYS,
+  FAILURE_REASON_TOO_MANY_MISSES,
   DEFAULT_COMMITMENT_AMOUNT,
   MAX_COMMITMENT_AMOUNT,
   REQUIRED_TESTER_COUNT,
@@ -309,9 +311,11 @@ function checkCancelEligible({ status, lockTxId, expiry = null }) {
     return {
       ok: false,
       code: "failed-precondition",
-      message:
-        "That commitment's testing window has closed short of its requirement, " +
-        "so it can no longer be cancelled.",
+      message: expiry.reason === FAILURE_REASON_TOO_MANY_MISSES
+        ? "That commitment has missed more testing days than allowed, " +
+          "so it can no longer be cancelled."
+        : "That commitment's testing window has closed short of its requirement, " +
+          "so it can no longer be cancelled.",
     };
   }
   return { ok: true };
@@ -354,6 +358,10 @@ function checkForfeitEligible({
   daysRequired,
   qualifyingDays,
   nowMillis,
+  // True only when the pinned-window verdict is `tooManyMisses`. Waives the
+  // elapsed-calendar gate below and NOTHING else: the third miss legitimately
+  // ends a commitment before its calendar length has run.
+  earlyRemoval = false,
 }) {
   if (isTerminalStatus(status)) {
     return {
@@ -378,9 +386,9 @@ function checkForfeitEligible({
   }
   const window = Number.isInteger(windowDays) && windowDays > 0
     ? windowDays
-    : COMMITMENT_WINDOW_DAYS;
+    : LEGACY_COMMITMENT_WINDOW_DAYS;
   const deadline = createdAtMillis + window * MILLIS_PER_DAY;
-  if (!Number.isInteger(nowMillis) || nowMillis < deadline) {
+  if (!Number.isInteger(nowMillis) || (!earlyRemoval && nowMillis < deadline)) {
     return {
       ok: false,
       code: "failed-precondition",
@@ -408,7 +416,7 @@ function checkForfeitEligible({
 function windowDeadlineMillis(createdAtMillis, windowDays) {
   const window = Number.isInteger(windowDays) && windowDays > 0
     ? windowDays
-    : COMMITMENT_WINDOW_DAYS;
+    : LEGACY_COMMITMENT_WINDOW_DAYS;
   return createdAtMillis + window * MILLIS_PER_DAY;
 }
 

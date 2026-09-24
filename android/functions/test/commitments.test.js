@@ -1675,3 +1675,118 @@ test("a slot freed by cancellation can be claimed by a different tester", async 
   await claim(db, { testerId: "tester2" });
   assert.equal(db.__read("apps/app1").testerCount, REQUIRED_TESTER_COUNT);
 });
+
+// ---------------------------------------------------------------------------
+// The Batch 9A product rules, stated literally
+//
+// The constants above are what the code reads; these state the product in
+// plain numbers, so changing the rules means changing a test that says so.
+// ---------------------------------------------------------------------------
+
+function fundedTester(seed, testerId) {
+  seed[`users/${testerId}`] = { uid: testerId };
+  seed[`users/${testerId}/wallet/balance`] = {
+    available: 50,
+    locked: 0,
+    forfeitedTotal: 0,
+    purchasedTotal: 0,
+    adjustmentNet: 50,
+    ledgerCount: 1,
+    lastEntryId: "grant_seed",
+    schemaVersion: 2,
+  };
+}
+
+test("9A: a new claim pins 16/14/2 and a removal hint at the start of day 4", async () => {
+  const db = fakeDb(world());
+  await claim(db);
+
+  const a = db.__read(C1_PATH);
+  assert.equal(a.windowDays, 16);
+  assert.equal(a.daysRequired, 14);
+  assert.equal(a.allowedMisses, 2);
+  assert.equal(addDays(a.firstEligibleDayKey, 15), a.lastEligibleDayKey, "16 inclusive days");
+  assert.equal(
+    a.removalCheckAt.toMillis(),
+    startOfLocalDayMillis(addDays(a.firstEligibleDayKey, 3), a.timeZone),
+    "the earliest a third miss can land",
+  );
+  assert.equal(a.missedDays, undefined, "the live miss count is never stored");
+  assert.equal(a.failureReason, undefined);
+});
+
+test("9A: the app's testing group is 16 slots - the 16th claim succeeds, the 17th is refused", async () => {
+  assert.equal(REQUIRED_TESTER_COUNT, 16);
+  const seed = world({ available: null });
+  const testers = Array.from({ length: 17 }, (_, i) => `t${i + 1}`);
+  for (const t of testers) fundedTester(seed, t);
+  const db = fakeDb(seed);
+
+  for (const t of testers.slice(0, 16)) await claim(db, { testerId: t });
+  assert.equal(db.__read("apps/app1").testerCount, 16);
+
+  await assert.rejects(claim(db, { testerId: "t17" }), /all the testers it needs/);
+  assert.equal(db.__read("apps/app1").testerCount, 16, "the refusal took no slot");
+  assert.equal(db.__read("users/t17/wallet/balance").available, 50, "and locked no coins");
+  assert.equal(db.__has(`activeClaims/${activeClaimId(APP, "t17")}`), false);
+
+  // A cancellation frees exactly one slot, which the 17th tester can then take.
+  await cancel(db, {
+    assignmentId: cycleAssignmentId(APP, "t1", 1),
+    actorId: "t1",
+    nowMillis: Date.now(),
+  });
+  assert.equal(db.__read("apps/app1").testerCount, 15);
+  await claim(db, { testerId: "t17" });
+  assert.equal(db.__read("apps/app1").testerCount, 16);
+});
+
+test("9A: an app already above 16 from the old cap evicts nobody and just refuses new claims", async () => {
+  const seed = world({ available: null, extra: {} });
+  seed["apps/app1"].testerCount = 18;
+  fundedTester(seed, "late");
+  const db = fakeDb(seed);
+  await assert.rejects(claim(db, { testerId: "late" }), /all the testers it needs/);
+  assert.equal(db.__read("apps/app1").testerCount, 18, "no one was removed to fit the new cap");
+});
+
+test("9A: a legacy 18-day commitment keeps its stored rules - nothing rewrites it", async () => {
+  // A commitment claimed before the miss rule: 18-day window, no allowedMisses,
+  // only 3 days logged, then silence.
+  const legacy = deriveWindow({ claimedAtMillis: DAY0, timeZone: FIXTURE_TZ, windowDays: 18 });
+  const seed = claimedWorld({ logs: 0 });
+  Object.assign(seed[C1_PATH], {
+    windowDays: 18,
+    claimedDayKey: legacy.claimedDayKey,
+    firstEligibleDayKey: legacy.firstEligibleDayKey,
+    lastEligibleDayKey: legacy.lastEligibleDayKey,
+    qualifyingDays: 3,
+    daysCompleted: 3,
+  });
+  for (let i = 0; i < 3; i += 1) {
+    const d = addDays(legacy.firstEligibleDayKey, i);
+    seed[`testingLogs/${C1}__${d}`] = { assignmentId: C1, testerId: TESTER, date: d };
+  }
+  const before = { ...seed[C1_PATH] };
+  const db = fakeDb(seed);
+
+  // Day 17 of its 18: a 16-day commitment would be long gone (13 misses), but
+  // this one is still inside its original window, so it cannot be forfeited.
+  const day17 = startOfLocalDayMillis(addDays(legacy.firstEligibleDayKey, 16), FIXTURE_TZ) + 3600e3;
+  await assert.rejects(
+    runForfeitCommitment(db, { assignmentId: C1, actorId: "system", actorKind: "system", nowMillis: day17 }),
+    /not closed yet|has not closed/,
+  );
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+
+  const after = db.__read(C1_PATH);
+  for (const f of ["windowDays", "daysRequired", "firstEligibleDayKey", "lastEligibleDayKey"]) {
+    assert.deepEqual(after[f], before[f], `${f} unchanged`);
+  }
+  assert.equal(after.allowedMisses, undefined, "the miss rule is never retrofitted");
+
+  // And its tester may still walk away with their stake, as the old rules allow.
+  const out = await cancel(db, { nowMillis: day17 });
+  assert.equal(out.cancelled, true);
+  assertWalletSound(db);
+});

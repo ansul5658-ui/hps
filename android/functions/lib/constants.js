@@ -37,8 +37,13 @@ const OFFICIAL_GROUP_EMAIL = "developerapptesting@googlegroups.com";
  * higher to absorb dropout, and it must not be read as "what Play demands".
  * Nothing in this file should encode a Play threshold — if the platform
  * requirement changes, that belongs in product configuration, not here.
+ *
+ * The app's slot-holding testers ARE its testing group: 16 slots, taken and
+ * released through `capacityHeld` (see `holdsCapacity` in lib/commitments.js).
+ * Lowering this never evicts anyone - an app already above it simply refuses
+ * new claims until releases bring it back under.
  */
-const REQUIRED_TESTER_COUNT = 20;
+const REQUIRED_TESTER_COUNT = 16;
 
 /** Default length of a testing assignment, in days. */
 const DEFAULT_DAYS_REQUIRED = 14;
@@ -88,13 +93,37 @@ const MAX_COMMITMENT_AMOUNT = 500;
 const COMMITMENT_DAYS_REQUIRED = 14;
 
 /**
- * Calendar days a tester has to reach COMMITMENT_DAYS_REQUIRED.
+ * Calendar days a NEW commitment has to reach COMMITMENT_DAYS_REQUIRED.
  *
- * Deliberately longer than the requirement (18 > 14) so an ordinary missed day
- * is recoverable. Forfeiture is only possible after this window has actually
- * elapsed on the SERVER clock - see `checkForfeitEligible`.
+ * 16 > 14 leaves exactly COMMITMENT_ALLOWED_MISSES days of slack. Pinned on
+ * the assignment at claim (`windowDays`, `lastEligibleDayKey`), so changing
+ * it never moves the deadline of a commitment already in flight.
  */
-const COMMITMENT_WINDOW_DAYS = 18;
+const COMMITMENT_WINDOW_DAYS = 16;
+
+/**
+ * The window every commitment claimed before the miss rule used.
+ *
+ * Only ever a FALLBACK for a stored assignment that is missing `windowDays` -
+ * every claim writes it, so in practice that is corrupt data. Falling back to
+ * the longer legacy window there is the conservative direction: it can only
+ * make a deadline later, never forfeit someone sooner than their rules said.
+ */
+const LEGACY_COMMITMENT_WINDOW_DAYS = 18;
+
+/**
+ * Missed days a NEW commitment may accumulate; the next one removes it.
+ *
+ * Pinned on the assignment as `allowedMisses` at claim. Its PRESENCE is what
+ * opts a commitment into the miss rule at all: an assignment claimed before
+ * the rule existed has no `allowedMisses` and keeps its original
+ * window-only rule for life. See lib/misses.js.
+ */
+const COMMITMENT_ALLOWED_MISSES = 2;
+
+/** Why a commitment failed. Written on the terminal assignment as `failureReason`. */
+const FAILURE_REASON_WINDOW_CLOSED_SHORT = "windowClosedShort";
+const FAILURE_REASON_TOO_MANY_MISSES = "tooManyMisses";
 
 /**
  * IANA timezone pinned to a commitment when the tester has not supplied one.
@@ -301,6 +330,10 @@ module.exports = {
   MAX_COMMITMENT_AMOUNT,
   COMMITMENT_DAYS_REQUIRED,
   COMMITMENT_WINDOW_DAYS,
+  LEGACY_COMMITMENT_WINDOW_DAYS,
+  COMMITMENT_ALLOWED_MISSES,
+  FAILURE_REASON_WINDOW_CLOSED_SHORT,
+  FAILURE_REASON_TOO_MANY_MISSES,
   ACTIVE_CLAIMS_COLLECTION,
   SYSTEM_HEALTH_COLLECTION,
   EXPIRY_SWEEP_SCHEDULE,

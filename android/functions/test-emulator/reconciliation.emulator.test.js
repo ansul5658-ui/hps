@@ -229,7 +229,10 @@ test("a refused late cancellation leaves the wallet reconciled and untouched", a
       actorKind: "user",
       nowMillis: Date.now() + 30 * MILLIS_PER_DAY,
     }),
-    /closed short/,
+    // A real claim is under the miss rule (Batch 9A): with nothing logged, its
+    // third miss landed on day 4, long before the window closed - so that is
+    // the reason the late cancel is refused for.
+    /missed more testing days than allowed/,
   );
 
   const after = await assertReconciles({ available: 0, locked: 50 }, "after refusal");

@@ -313,6 +313,53 @@ test("nobody can write capacityHeld to hold or free a slot from the client", asy
   }
 });
 
+test("nobody can write the miss-rule fields from the client", async () => {
+  // Batch 9A server-owned fields. Each one decides whether coins are forfeited
+  // or a slot is released: raising allowedMisses or windowDays buys immunity,
+  // lowering daysRequired buys an early unlock, zeroing missedDays or pushing
+  // removalCheckAt out hides a removal from the sweep, and failureReason
+  // rewrites why coins were lost.
+  const writes = [
+    { allowedMisses: 99 },
+    { allowedMisses: null },
+    { missedDays: 0 },
+    { windowDays: 99 },
+    { daysRequired: 1 },
+    { failureReason: "windowClosedShort" },
+    { failureReason: null },
+    { removalCheckAt: serverTimestamp() },
+    { capacityHeld: false },
+  ];
+  for (const db of [asUser(ALICE), asUser(DEV), asUser("admin1"), asUser("banned"), asUser("nofields"), asAnon()]) {
+    for (const data of writes) {
+      await assertFails(
+        updateDoc(doc(db, ASSIGNMENT(A_C1)), data),
+        `update ${JSON.stringify(Object.keys(data))} must be refused`,
+      );
+    }
+  }
+  // Nor can a client create an assignment that carries them.
+  await assertFails(
+    setDoc(
+      doc(asUser(ALICE), ASSIGNMENT(`${APP}__${ALICE}__c9`)),
+      commitmentDoc({ cycle: 9, allowedMisses: 99, windowDays: 99, daysRequired: 1, missedDays: 0 }),
+    ),
+  );
+  // The tester can still READ them on their own commitment - they are the
+  // tester's own rules - and a stranger cannot.
+  await testEnv.withSecurityRulesDisabled((ctx) =>
+    updateDoc(doc(ctx.firestore(), ASSIGNMENT(A_C1)), {
+      allowedMisses: 2,
+      windowDays: 16,
+      failureReason: "tooManyMisses",
+      missedDays: 3,
+    }),
+  );
+  const own = await assertSucceeds(getDoc(doc(asUser(ALICE), ASSIGNMENT(A_C1))));
+  if (own.get("allowedMisses") !== 2) throw new Error("tester should read allowedMisses");
+  await assertFails(getDoc(doc(asUser(BOB), ASSIGNMENT(A_C1))));
+});
+
 test("an app owner cannot write testerCount on their own app", async () => {
   await testEnv.withSecurityRulesDisabled((ctx) =>
     updateDoc(doc(ctx.firestore(), `apps/${APP}`), { testerCount: 3 }),

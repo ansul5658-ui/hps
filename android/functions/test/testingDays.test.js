@@ -42,6 +42,8 @@ const { checkInvariants } = require("../lib/wallet");
 const {
   COMMITMENT_DAYS_REQUIRED,
   COMMITMENT_WINDOW_DAYS,
+  LEGACY_COMMITMENT_WINDOW_DAYS,
+  COMMITMENT_ALLOWED_MISSES,
   DEFAULT_COMMITMENT_TIMEZONE,
 } = require("../lib/constants");
 
@@ -142,26 +144,58 @@ test("G: day 1 is the NEXT full local day, never the partial claim day", () => {
   assert.equal(w2.firstEligibleDayKey, "2026-03-03");
 });
 
-test("G: the window is 18 inclusive calendar days", () => {
+test("G: a NEW window is 16 inclusive calendar days", () => {
   const w = deriveWindow({ claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"), timeZone: IST });
   assert.equal(w.firstEligibleDayKey, "2026-03-02");
-  assert.equal(w.lastEligibleDayKey, "2026-03-19");
+  assert.equal(w.lastEligibleDayKey, "2026-03-17");
   assert.equal(
     daysBetween(w.firstEligibleDayKey, w.lastEligibleDayKey) + 1,
     COMMITMENT_WINDOW_DAYS,
     "day1..last inclusive must be exactly the window length",
   );
+  assert.equal(w.windowDays, 16);
+});
+
+test("G: a NEW window leaves exactly the allowed misses as slack — 16 days to earn 14", () => {
+  assert.equal(COMMITMENT_WINDOW_DAYS - COMMITMENT_DAYS_REQUIRED, COMMITMENT_ALLOWED_MISSES);
+  assert.equal(COMMITMENT_ALLOWED_MISSES, 2);
+});
+
+test("G: a NEW window ends at local midnight after its last eligible day", () => {
+  const w = deriveWindow({ claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"), timeZone: IST });
+  // 2026-03-18 00:00 IST == 2026-03-17 18:30 UTC.
+  assert.equal(new Date(w.windowEndsAtMillis).toISOString(), "2026-03-17T18:30:00.000Z");
+});
+
+/** The window every commitment claimed before the miss rule pinned. */
+function legacyWindow() {
+  return deriveWindow({
+    claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"),
+    timeZone: IST,
+    windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
+  });
+}
+
+test("G: a LEGACY window is still 18 inclusive calendar days", () => {
+  const w = legacyWindow();
+  assert.equal(w.firstEligibleDayKey, "2026-03-02");
+  assert.equal(w.lastEligibleDayKey, "2026-03-19");
+  assert.equal(
+    daysBetween(w.firstEligibleDayKey, w.lastEligibleDayKey) + 1,
+    LEGACY_COMMITMENT_WINDOW_DAYS,
+    "day1..last inclusive must be exactly the window length",
+  );
   assert.equal(w.windowDays, 18);
 });
 
-test("G: the window ends at local midnight after the last eligible day", () => {
-  const w = deriveWindow({ claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"), timeZone: IST });
+test("G: a LEGACY window ends at local midnight after the last eligible day", () => {
+  const w = legacyWindow();
   // 2026-03-20 00:00 IST == 2026-03-19 18:30 UTC.
   assert.equal(new Date(w.windowEndsAtMillis).toISOString(), "2026-03-19T18:30:00.000Z");
 });
 
-test("G: 4 flex days — 18 days to earn 14", () => {
-  const w = deriveWindow({ claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"), timeZone: IST });
+test("G: a LEGACY window keeps its 4 flex days — 18 days to earn 14", () => {
+  const w = legacyWindow();
   const span = daysBetween(w.firstEligibleDayKey, w.lastEligibleDayKey) + 1;
   assert.equal(span - COMMITMENT_DAYS_REQUIRED, 4);
   // On day 1 with nothing recorded, all four are still available.
@@ -479,9 +513,14 @@ function fakeDb(seed = {}, opts = {}) {
   return db;
 }
 
-/** A live commitment with a pinned IST window, `done` days already recorded. */
+/**
+ * A live LEGACY commitment - 18-day window, no `allowedMisses` - with a pinned
+ * IST window and `done` days already recorded. The engine tests below prove
+ * such a commitment keeps working exactly as it did before the miss rule;
+ * misses.test.js covers commitments claimed under it.
+ */
 function committedWorld({ done = 0, status = "inProgress", locked = 50, available = 0, extra = {} } = {}) {
-  const w = deriveWindow({ claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"), timeZone: IST });
+  const w = legacyWindow();
   return {
     [`users/${TESTER}`]: { uid: TESTER },
     [`users/${DEV}`]: { uid: DEV },
@@ -493,7 +532,7 @@ function committedWorld({ done = 0, status = "inProgress", locked = 50, availabl
       cycle: 1,
       commitmentAmount: 50,
       daysRequired: COMMITMENT_DAYS_REQUIRED,
-      windowDays: COMMITMENT_WINDOW_DAYS,
+      windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
       timeZone: w.timeZone,
       timeZoneSource: "default",
       claimedDayKey: w.claimedDayKey,

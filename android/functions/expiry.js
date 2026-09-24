@@ -48,6 +48,7 @@ const {
   ACTOR_KIND_ADMIN,
 } = require("./lib/constants");
 const { checkCommitmentExpiry, couldBeExpired } = require("./lib/expiry");
+const { readMissEvidence } = require("./lib/misses");
 const { runForfeitCommitment } = require("./commitments");
 const { readOutageRecords } = require("./systemHealth");
 const { requireAuth, requireAdmin, requireDocId } = require("./lib/guards");
@@ -88,6 +89,20 @@ async function evaluateAssignmentExpiry(db, { assignmentId, nowMillis = Date.now
     .get();
   const qualifyingDays = countSnap.data().count;
 
+  // The miss rule's evidence, read exactly as the settlement reads it.
+  const allowedMisses = snap.get("allowedMisses");
+  const loggedDayKeys = await readMissEvidence({
+    assignmentId,
+    allowedMisses,
+    timeZone: snap.get("timeZone"),
+    firstEligibleDayKey,
+    lastEligibleDayKey,
+    appId: snap.get("appId"),
+    outageRecords,
+    nowMillis,
+    read: (path) => db.doc(path).get(),
+  });
+
   const verdict = checkCommitmentExpiry({
     status: snap.get("status"),
     lockTxId: snap.get("lockTxId"),
@@ -99,6 +114,8 @@ async function evaluateAssignmentExpiry(db, { assignmentId, nowMillis = Date.now
     daysRequired: snap.get("daysRequired") || COMMITMENT_DAYS_REQUIRED,
     outageRecords,
     nowMillis,
+    allowedMisses,
+    loggedDayKeys,
   });
 
   return {
@@ -134,15 +151,32 @@ async function evaluateAssignmentExpiry(db, { assignmentId, nowMillis = Date.now
  * which gets slower forever.
  */
 async function findExpiryCandidates(db, { nowMillis, limit = EXPIRY_SWEEP_LIMIT }) {
+  const liveStatuses = ["ready", "inProgress", "waitingForVerification"];
   const snap = await db
     .collection("testingAssignments")
-    .where("status", "in", ["ready", "inProgress", "waitingForVerification"])
+    .where("status", "in", liveStatuses)
     .where("windowEndsAt", "<=", new Date(nowMillis))
     .orderBy("windowEndsAt", "asc")
     .limit(limit)
     .get();
 
-  return snap.docs
+  // Commitments that may have crossed their miss limit before their window
+  // closes. `removalCheckAt` exists only on commitments claimed under the miss
+  // rule, so every legacy commitment is found by the window query above alone,
+  // exactly as before. It is a lower bound (see `removalCheckAtMillis`), so
+  // this can only over-select; the settlement transaction re-decides each one.
+  //
+  // REQUIRES A COMPOSITE INDEX: (status ASC, removalCheckAt ASC), declared in
+  // `firestore.indexes.json` beside the windowEndsAt one.
+  const removalSnap = await db
+    .collection("testingAssignments")
+    .where("status", "in", liveStatuses)
+    .where("removalCheckAt", "<=", new Date(nowMillis))
+    .orderBy("removalCheckAt", "asc")
+    .limit(limit)
+    .get();
+
+  const windowIds = snap.docs
     .filter((doc) => {
       // A reward-era assignment staked nothing; forfeiting one would consume
       // coins that were never locked.
@@ -157,6 +191,15 @@ async function findExpiryCandidates(db, { nowMillis, limit = EXPIRY_SWEEP_LIMIT 
       });
     })
     .map((doc) => doc.id);
+
+  const removalIds = removalSnap.docs
+    .filter((doc) => doc.get("lockTxId") && !TERMINAL_ASSIGNMENT_STATUSES.includes(doc.get("status")))
+    .map((doc) => doc.id);
+
+  // One evaluation per assignment even when both queries found it. Each is
+  // settled in its own idempotent transaction regardless, so a duplicate would
+  // only cost a refused attempt - but it would be reported as a skip.
+  return [...new Set([...windowIds, ...removalIds])].slice(0, limit);
 }
 
 /**

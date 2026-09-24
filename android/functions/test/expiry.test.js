@@ -27,7 +27,7 @@ const {
   startOfLocalDayMillis,
   addDays,
 } = require("../lib/testingDays");
-const { COMMITMENT_DAYS_REQUIRED } = require("../lib/constants");
+const { COMMITMENT_DAYS_REQUIRED, LEGACY_COMMITMENT_WINDOW_DAYS } = require("../lib/constants");
 const { runExpirySweep, findExpiryCandidates, evaluateAssignmentExpiry } = require("../expiry");
 const { runForfeitCommitment } = require("../commitments");
 const { runDeclareOutage } = require("../systemHealth");
@@ -45,8 +45,17 @@ const C1_PATH = `testingAssignments/${C1}`;
 const WALLET_PATH = `users/${TESTER}/wallet/balance`;
 const CLAIM_PATH = `activeClaims/${activeClaimId(APP, TESTER)}`;
 
-/** The window a claim on 2026-03-01 06:00 UTC pins, in IST. */
-const W = deriveWindow({ claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"), timeZone: IST });
+/**
+ * The window a claim on 2026-03-01 06:00 UTC pinned, in IST, BEFORE the miss
+ * rule: an 18-day window and no `allowedMisses`. Every fixture in this file is
+ * such a legacy commitment, which is exactly what proves those keep their
+ * original rules. The miss rule has its own suite (misses.test.js).
+ */
+const W = deriveWindow({
+  claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"),
+  timeZone: IST,
+  windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
+});
 
 const base = (over = {}) => ({
   status: "inProgress",
@@ -692,7 +701,11 @@ function fakeDb(seed = {}) {
 /** An expired commitment: window long shut, only `logs` qualifying days. */
 function expiredWorld({ logs = 3, status = "inProgress", appId = APP, extra = {} } = {}) {
   const claimedAt = Date.parse("2026-03-01T06:00:00Z");
-  const w = deriveWindow({ claimedAtMillis: claimedAt, timeZone: IST });
+  const w = deriveWindow({
+    claimedAtMillis: claimedAt,
+    timeZone: IST,
+    windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
+  });
   const seed = {
     [`users/${TESTER}`]: { uid: TESTER },
     [`apps/${appId}`]: { ownerId: DEV, status: "approved", testerCount: 1 },
@@ -940,7 +953,11 @@ test("G: a terminal assignment is excluded by the candidate query", async () => 
 
 test("G: the sweep respects its limit and the rest wait for the next run", async () => {
   const claimedAt = Date.parse("2026-03-01T06:00:00Z");
-  const w = deriveWindow({ claimedAtMillis: claimedAt, timeZone: IST });
+  const w = deriveWindow({
+    claimedAtMillis: claimedAt,
+    timeZone: IST,
+    windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
+  });
   const seed = {};
   for (let i = 0; i < 5; i += 1) {
     const tester = `t${i}`;
@@ -1263,4 +1280,272 @@ test("K: the released claim lets the tester start a fresh cycle", async () => {
   // Which is what `nextCycle` needs in order to hand out cycle 2.
   const { cycleOf } = require("../lib/commitments");
   assert.equal(cycleOf(C1), 1);
+});
+
+// ---------------------------------------------------------------------------
+// M. The miss rule, end to end through the real settlement paths
+//
+// Every fixture above is a LEGACY commitment. These are commitments claimed
+// under the miss rule: a 16-day window, 14 required, `allowedMisses: 2`, and a
+// `removalCheckAt` sweep hint - exactly the fields `runClaimCommitment` writes.
+// ---------------------------------------------------------------------------
+
+const { runCancelCommitment } = require("../commitments");
+const { runRecordTestingDay } = require("../testingDays");
+const { cancelEntryId } = require("../lib/commitments");
+const { removalCheckAtMillis } = require("../lib/misses");
+const { foldLedger } = require("../lib/wallet");
+
+const NEW_CLAIMED_AT = Date.parse("2026-03-01T06:00:00Z");
+const NW = deriveWindow({ claimedAtMillis: NEW_CLAIMED_AT, timeZone: IST });
+const nDay = (n) => addDays(NW.firstEligibleDayKey, n - 1);
+const nAt = (n, hours = 12) => startOfLocalDayMillis(nDay(n), IST) + hours * 60 * 60 * 1000;
+
+/** A live commitment claimed under the miss rule, with logs on `loggedDays` (1-based). */
+function missWorld({ loggedDays = [], testerCount = 1, extra = {} } = {}) {
+  const seed = {
+    [`users/${TESTER}`]: { uid: TESTER },
+    [`apps/${APP}`]: { ownerId: DEV, status: "approved", testerCount },
+    [C1_PATH]: {
+      appId: APP,
+      testerId: TESTER,
+      developerId: DEV,
+      cycle: 1,
+      commitmentAmount: 50,
+      daysRequired: 14,
+      windowDays: NW.windowDays,
+      allowedMisses: 2,
+      removalCheckAt: {
+        toMillis: () =>
+          removalCheckAtMillis({ fromDayKey: NW.claimedDayKey, allowedMisses: 2, timeZone: IST }),
+      },
+      timeZone: IST,
+      claimedDayKey: NW.claimedDayKey,
+      firstEligibleDayKey: NW.firstEligibleDayKey,
+      lastEligibleDayKey: NW.lastEligibleDayKey,
+      windowEndsAt: { toMillis: () => NW.windowEndsAtMillis },
+      qualifyingDays: loggedDays.length,
+      daysCompleted: loggedDays.length,
+      status: "inProgress",
+      lockTxId: lockEntryId(C1),
+      settlementTxId: null,
+      capacityHeld: true,
+      createdAt: { toMillis: () => NEW_CLAIMED_AT },
+    },
+    [CLAIM_PATH]: { assignmentId: C1, appId: APP, testerId: TESTER, cycle: 1 },
+    [WALLET_PATH]: {
+      available: 0,
+      locked: 50,
+      forfeitedTotal: 0,
+      purchasedTotal: 0,
+      adjustmentNet: 50,
+      ledgerCount: 2,
+      schemaVersion: 2,
+    },
+    // The grant that funded the stake and the lock itself, so the ledger
+    // folds to the wallet before and after settlement.
+    [`users/${TESTER}/coinTransactions/grant_seed`]: {
+      kind: "adjustment", source: "adminGrant", amount: 50,
+      deltaAvailable: 50, deltaLocked: 0, deltaForfeited: 0, schemaVersion: 2,
+    },
+    [`users/${TESTER}/coinTransactions/${lockEntryId(C1)}`]: {
+      kind: "lock", source: "commitment", amount: 50,
+      deltaAvailable: -50, deltaLocked: 50, deltaForfeited: 0, schemaVersion: 2,
+    },
+    ...extra,
+  };
+  for (const n of loggedDays) {
+    const key = nDay(n);
+    seed[`testingLogs/${C1}__${key}`] = { assignmentId: C1, testerId: TESTER, date: key, cycle: 1 };
+  }
+  return seed;
+}
+
+/** Eligible days `from`..`to` except those in `skip`. */
+function days(from, to, skip = []) {
+  const out = [];
+  for (let n = from; n <= to; n += 1) if (!skip.includes(n)) out.push(n);
+  return out;
+}
+
+function ledgerOf(db) {
+  const prefix = `users/${TESTER}/coinTransactions/`;
+  return [...db.__store.entries()]
+    .filter(([p]) => p.startsWith(prefix))
+    .map(([p, rec]) => ({ id: p.slice(prefix.length), ...rec.data }));
+}
+
+function assertReconciles(db) {
+  const { wallet: folded } = foldLedger(ledgerOf(db));
+  const w = db.__read(WALLET_PATH);
+  for (const f of ["available", "locked", "forfeitedTotal"]) {
+    assert.equal(folded[f], w[f], `ledger fold disagrees on ${f}`);
+  }
+}
+
+test("M: the sweep removes a commitment at its 3rd miss, before the window closes", async () => {
+  // Day 10; days 3, 5 and 7 were missed.
+  const db = fakeDb(missWorld({ loggedDays: days(1, 9, [3, 5, 7]) }));
+  assertReconciles(db);
+  const summary = await runExpirySweep(db, { nowMillis: nAt(10) });
+
+  assert.equal(summary.forfeitedCount, 1);
+  const a = db.__read(C1_PATH);
+  assert.equal(a.status, "failed");
+  assert.equal(a.failureReason, "tooManyMisses");
+  assert.equal(a.missedDays, 3);
+  assert.equal(a.qualifyingDays, 6);
+  assert.equal(a.settlementTxId, forfeitEntryId(C1));
+
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.locked, 0);
+  assert.equal(w.forfeitedTotal, 50);
+  assert.equal(w.available, 0);
+  assertWalletSound(db);
+  assertReconciles(db);
+
+  assert.equal(db.__has(CLAIM_PATH), false, "the active claim is closed");
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 0, "exactly one slot released");
+  assert.equal(a.capacityHeld, false);
+});
+
+test("M: 0, 1 and 2 misses survive the sweep untouched", async () => {
+  for (const skip of [[], [3], [3, 7]]) {
+    const db = fakeDb(missWorld({ loggedDays: days(1, 9, skip) }));
+    const summary = await runExpirySweep(db, { nowMillis: nAt(10) });
+    assert.equal(summary.forfeitedCount, 0, `misses ${skip}`);
+    assert.equal(db.__read(C1_PATH).status, "inProgress");
+    assert.equal(db.__read(WALLET_PATH).locked, 50);
+    assert.equal(db.__read(`apps/${APP}`).testerCount, 1);
+  }
+});
+
+test("M: a removal candidate is found by removalCheckAt, not only by the window's end", async () => {
+  const db = fakeDb(missWorld({ loggedDays: [] }));
+  // Start of day 4: the earliest possible third miss, twelve days before the window ends.
+  const earliest = startOfLocalDayMillis(nDay(4), IST);
+  assert.deepEqual(await findExpiryCandidates(db, { nowMillis: earliest }), [C1]);
+  assert.deepEqual(await findExpiryCandidates(db, { nowMillis: earliest - 1 }), []);
+  // Past the window's end it is found by BOTH queries - and evaluated once.
+  assert.deepEqual(await findExpiryCandidates(db, { nowMillis: AFTER }), [C1]);
+});
+
+test("M: repeated sweeps settle once - one forfeit entry, one slot released", async () => {
+  const db = fakeDb(missWorld({ loggedDays: [], testerCount: 5 }));
+  for (let i = 0; i < 10; i += 1) await runExpirySweep(db, { nowMillis: nAt(6) + i });
+
+  const forfeits = ledgerOf(db).filter((e) => e.kind === "forfeit");
+  assert.equal(forfeits.length, 1);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 50, "never 500");
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 4, "released once, not ten times");
+  assertWalletSound(db);
+  assertReconciles(db);
+});
+
+test("M: testerCount cannot go negative on removal", async () => {
+  const db = fakeDb(missWorld({ loggedDays: [], testerCount: 0 }));
+  await runExpirySweep(db, { nowMillis: nAt(6) });
+  assert.equal(db.__read(C1_PATH).status, "failed");
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 0);
+});
+
+test("M: cancellation after the 3rd miss is refused, then the sweep forfeits", async () => {
+  const db = fakeDb(missWorld({ loggedDays: days(1, 9, [3, 5, 7]) }));
+  await assert.rejects(
+    runCancelCommitment(db, { assignmentId: C1, actorId: TESTER, actorKind: "user", nowMillis: nAt(10) }),
+    /missed more testing days than allowed/,
+  );
+  assert.equal(db.__read(C1_PATH).status, "inProgress");
+  assert.equal(db.__read(WALLET_PATH).locked, 50, "the stake stays for forfeiture");
+  assert.equal(db.__has(`users/${TESTER}/coinTransactions/${cancelEntryId(C1)}`), false);
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 1, "a refused cancel frees no slot");
+
+  await runExpirySweep(db, { nowMillis: nAt(10) });
+  assert.equal(db.__read(C1_PATH).failureReason, "tooManyMisses");
+  assertWalletSound(db);
+  assertReconciles(db);
+});
+
+test("M: cancellation at 2 misses still returns the stake", async () => {
+  const db = fakeDb(missWorld({ loggedDays: days(1, 9, [3, 7]) }));
+  const outcome = await runCancelCommitment(db, {
+    assignmentId: C1, actorId: TESTER, actorKind: "user", nowMillis: nAt(10),
+  });
+  assert.equal(outcome.cancelled, true);
+  assert.equal(db.__read(WALLET_PATH).available, 50);
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 0);
+  assertWalletSound(db);
+  assertReconciles(db);
+});
+
+test("M: a check-in after the 3rd miss is refused and cannot revive the commitment", async () => {
+  const db = fakeDb(missWorld({ loggedDays: days(1, 9, [3, 5, 7]) }));
+  await assert.rejects(
+    runRecordTestingDay(db, { assignmentId: C1, testerId: TESTER, nowMillis: nAt(10) }),
+    /missed more testing days than allowed/,
+  );
+  assert.equal(db.__has(`testingLogs/${C1}__${nDay(10)}`), false, "no log was written");
+  assert.equal(db.__read(C1_PATH).qualifyingDays, 6);
+});
+
+test("M: a check-in at 2 misses records the day and moves the removal hint forward", async () => {
+  const db = fakeDb(missWorld({ loggedDays: days(1, 9, [3, 7]) }));
+  const outcome = await runRecordTestingDay(db, { assignmentId: C1, testerId: TESTER, nowMillis: nAt(10) });
+  assert.equal(outcome.recorded, true);
+  const a = db.__read(C1_PATH);
+  assert.equal(a.qualifyingDays, 8);
+  // 2 misses so far, day 10 logged: one more miss (day 11) removes, from day 12.
+  assert.equal(a.removalCheckAt.toMillis(), startOfLocalDayMillis(nDay(12), IST));
+  assert.equal(a.missedDays, undefined, "the live miss count is derived, never stored");
+});
+
+test("M: completion wins at 14 days with 2 misses, and the sweep then leaves it alone", async () => {
+  // Days 1-15 with 3 and 7 missed = 13 logged; day 16 is the 14th.
+  const db = fakeDb(missWorld({ loggedDays: days(1, 15, [3, 7]), testerCount: 3 }));
+  const outcome = await runRecordTestingDay(db, { assignmentId: C1, testerId: TESTER, nowMillis: nAt(16) });
+  assert.equal(outcome.completed, true);
+  assert.equal(db.__read(C1_PATH).status, "completed");
+  assert.equal(db.__read(WALLET_PATH).available, 50, "the same coins come back");
+
+  const summary = await runExpirySweep(db, { nowMillis: AFTER });
+  assert.equal(summary.forfeitedCount, 0);
+  assert.equal(db.__read(C1_PATH).status, "completed", "never both completed and failed");
+  assert.equal(db.__read(C1_PATH).failureReason, undefined);
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 3, "completion keeps its slot");
+  assertWalletSound(db);
+  assertReconciles(db);
+});
+
+test("M: a direct forfeiture of a live commitment at 2 misses is refused", async () => {
+  const db = fakeDb(missWorld({ loggedDays: days(1, 9, [3, 7]) }));
+  await assert.rejects(
+    runForfeitCommitment(db, { assignmentId: C1, actorId: "system", actorKind: "system", nowMillis: nAt(10) }),
+    /not closed yet/,
+  );
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+});
+
+test("M: an outage day is not a miss - the removal waits for a real third miss", async () => {
+  const outage = {
+    [`systemHealth/${nDay(2)}`]: { dayKey: nDay(2), degraded: true, scope: "global" },
+  };
+  const db = fakeDb(missWorld({ loggedDays: [], extra: outage }));
+  // Day 4: days 1 and 3 missed, day 2 an outage - only two misses.
+  assert.equal((await runExpirySweep(db, { nowMillis: nAt(4) })).forfeitedCount, 0);
+  // Day 4 then goes unlogged too: the third real miss.
+  assert.equal((await runExpirySweep(db, { nowMillis: nAt(5) })).forfeitedCount, 1);
+  assert.equal(db.__read(C1_PATH).missedDays, 3);
+});
+
+test("M: a LEGACY commitment with many unlogged days is not removed early", async () => {
+  // The legacy fixture: 18-day window, no allowedMisses, only 3 days logged.
+  const db = fakeDb(expiredWorld({ logs: 3 }));
+  const midWindow = startOfLocalDayMillis(addDays(W.firstEligibleDayKey, 12), IST);
+  assert.equal((await runExpirySweep(db, { nowMillis: midWindow })).forfeitedCount, 0);
+  assert.equal(db.__read(C1_PATH).status, "inProgress");
+  // It still forfeits at its original 18-day close, with its original reason.
+  await runExpirySweep(db, { nowMillis: AFTER });
+  assert.equal(db.__read(C1_PATH).status, "failed");
+  assert.equal(db.__read(C1_PATH).failureReason, "windowClosedShort");
+  assert.equal(db.__read(C1_PATH).missedDays, undefined);
 });

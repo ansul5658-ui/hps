@@ -7,6 +7,14 @@
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "windowEndsAt", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "testingAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "removalCheckAt", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

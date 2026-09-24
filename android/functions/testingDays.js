@@ -43,7 +43,13 @@ const {
 } = require("./lib/testingDays");
 const { stageUnlockSettlement, assignmentPath } = require("./commitments");
 const { readOutageRecords } = require("./systemHealth");
-const { effectiveLastEligibleDayKey } = require("./lib/outages");
+const { effectiveLastEligibleDayKey, applicableOutageDayKeys } = require("./lib/outages");
+const {
+  missRuleApplies,
+  countMissedDays,
+  readMissEvidence,
+  removalCheckAtMillis,
+} = require("./lib/misses");
 const { requireAuth, requireDocId } = require("./lib/guards");
 
 function logPath(logId) {
@@ -151,6 +157,38 @@ async function runRecordTestingDay(db, { assignmentId, testerId, nowMillis = Dat
       records: outageRecords,
     });
 
+    // The miss rule, for a commitment claimed under it. Judged from the logs
+    // the server itself wrote, in this transaction, so a check-in can never
+    // revive a commitment that has already lost its third day - otherwise a
+    // tester could keep checking in between midnight and the sweep and reach
+    // fourteen on a commitment that was over.
+    const allowedMisses = assignmentSnap.get("allowedMisses");
+    let missedDays = null;
+    if (missRuleApplies(allowedMisses)) {
+      const loggedDayKeys = await readMissEvidence({
+        assignmentId,
+        allowedMisses,
+        timeZone: clock.timeZone,
+        firstEligibleDayKey: clock.firstEligibleDayKey,
+        lastEligibleDayKey: clock.lastEligibleDayKey,
+        appId: assignmentSnap.get("appId"),
+        outageRecords,
+        nowMillis,
+        read: (path) => tx.get(db.doc(path)),
+      });
+      missedDays = countMissedDays({
+        firstEligibleDayKey: clock.firstEligibleDayKey,
+        lastEligibleDayKey: effectiveLastDayKey,
+        todayKey,
+        loggedDayKeys,
+        outageDayKeys: applicableOutageDayKeys(outageRecords, {
+          firstEligibleDayKey: clock.firstEligibleDayKey,
+          lastEligibleDayKey: clock.lastEligibleDayKey,
+          appId: assignmentSnap.get("appId"),
+        }),
+      });
+    }
+
     const eligible = checkTestingDayEligible({
       status: assignmentSnap.get("status"),
       lockTxId: assignmentSnap.get("lockTxId"),
@@ -161,6 +199,8 @@ async function runRecordTestingDay(db, { assignmentId, testerId, nowMillis = Dat
       qualifyingDays: storedQualifying,
       daysRequired,
       alreadyLoggedToday: logSnap.exists,
+      missedDays,
+      allowedMisses,
     });
 
     if (!eligible.ok) {
@@ -244,6 +284,17 @@ async function runRecordTestingDay(db, { assignmentId, testerId, nowMillis = Dat
       update.settlementTxId = settlement ? settlement.settlementTxId : null;
     } else if (assignmentSnap.get("status") === "ready") {
       update.status = "inProgress";
+    }
+    // Move the sweep-candidate hint forward: with today logged, the earliest
+    // the miss limit can now be crossed is later. Never read to decide.
+    if (!completes && missRuleApplies(allowedMisses) && Number.isInteger(missedDays)) {
+      const nextCheck = removalCheckAtMillis({
+        fromDayKey: todayKey,
+        missedSoFar: missedDays,
+        allowedMisses,
+        timeZone: clock.timeZone,
+      });
+      if (nextCheck !== null) update.removalCheckAt = Timestamp.fromMillis(nextCheck);
     }
     tx.update(assignmentRef, update);
 

@@ -40,7 +40,10 @@ const {
   nextCheckInAtMillis,
 } = require("../lib/testingDays");
 const { checkInvariants } = require("../lib/wallet");
-const { COMMITMENT_DAYS_REQUIRED, COMMITMENT_WINDOW_DAYS } = require("../lib/constants");
+const { COMMITMENT_DAYS_REQUIRED, LEGACY_COMMITMENT_WINDOW_DAYS } = require("../lib/constants");
+// Fixtures in this file are commitments claimed BEFORE the miss rule: an 18-day
+// window and no `allowedMisses`. Pinned explicitly so they keep proving the
+// legacy rules are untouched; the miss rule has misses.concurrency.test.js.
 
 const PROJECT_ID = "apptesting-concurrency-test";
 const IST = "Asia/Kolkata";
@@ -76,6 +79,7 @@ async function seedCommitment({ done = 0, status = "inProgress", available = 0, 
   const window = deriveWindow({
     claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"),
     timeZone: IST,
+    windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
   });
   const batch = db.batch();
   batch.set(db.doc(`users/${TESTER}`), { uid: TESTER });
@@ -88,7 +92,7 @@ async function seedCommitment({ done = 0, status = "inProgress", available = 0, 
     cycle: 1,
     commitmentAmount: 50,
     daysRequired: COMMITMENT_DAYS_REQUIRED,
-    windowDays: COMMITMENT_WINDOW_DAYS,
+    windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
     timeZone: window.timeZone,
     timeZoneSource: "default",
     claimedDayKey: window.claimedDayKey,
@@ -128,6 +132,7 @@ function atEligibleDay(n) {
   const window = deriveWindow({
     claimedAtMillis: Date.parse("2026-03-01T06:00:00Z"),
     timeZone: IST,
+    windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
   });
   const key = addDays(window.firstEligibleDayKey, n - 1);
   return startOfLocalDayMillis(key, IST) + 12 * 3600 * 1000;
@@ -388,7 +393,7 @@ test("G: a check-in on the claim day is refused — day 1 is the next full day",
 
 test("G: the last eligible day still works, the day after does not", async () => {
   await seedCommitment({ done: 5 });
-  const lastDay = await checkIn(atEligibleDay(COMMITMENT_WINDOW_DAYS));
+  const lastDay = await checkIn(atEligibleDay(LEGACY_COMMITMENT_WINDOW_DAYS));
   assert.equal(lastDay.recorded, true);
   assert.equal(lastDay.dayKey, "2026-03-19");
 

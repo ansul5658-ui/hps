@@ -53,6 +53,8 @@ const {
   ACTIVE_CLAIMS_COLLECTION,
   COMMITMENT_DAYS_REQUIRED,
   COMMITMENT_WINDOW_DAYS,
+  COMMITMENT_ALLOWED_MISSES,
+  FAILURE_REASON_TOO_MANY_MISSES,
   DEFAULT_COMMITMENT_TIMEZONE,
   TIMEZONE_SOURCE_TESTER,
   TIMEZONE_SOURCE_DEFAULT,
@@ -85,6 +87,7 @@ const {
 } = require("./lib/commitments");
 const { deriveWindow, isValidTimeZone } = require("./lib/testingDays");
 const { checkCommitmentExpiry } = require("./lib/expiry");
+const { missRuleApplies, readMissEvidence, removalCheckAtMillis } = require("./lib/misses");
 const { readOutageRecords } = require("./systemHealth");
 const { readWalletForUpdate, stageWalletEntry } = require("./wallet");
 const { requireAuth, requireAdmin, requireDocId } = require("./lib/guards");
@@ -116,6 +119,27 @@ async function countQualifyingDays(tx, db, assignmentId) {
     db.collection("testingLogs").where("assignmentId", "==", assignmentId).count(),
   );
   return snap.data().count;
+}
+
+/**
+ * Which judged days have a testing log, read in the caller's transaction -
+ * null for a legacy commitment, which is never judged on misses. See
+ * `readMissEvidence` for why these are point reads rather than a query.
+ * Call AFTER the outage records are read: outage credit decides how far the
+ * judged days run.
+ */
+function readMissEvidenceInTx(tx, db, assignmentSnap, { outageRecords, nowMillis }) {
+  return readMissEvidence({
+    assignmentId: assignmentSnap.id,
+    allowedMisses: assignmentSnap.get("allowedMisses"),
+    timeZone: assignmentSnap.get("timeZone"),
+    firstEligibleDayKey: assignmentSnap.get("firstEligibleDayKey"),
+    lastEligibleDayKey: assignmentSnap.get("lastEligibleDayKey"),
+    appId: assignmentSnap.get("appId"),
+    outageRecords,
+    nowMillis,
+    read: (path) => tx.get(db.doc(path)),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +323,20 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
       // Kept in step with qualifyingDays by recordTestingDay; the
       // settlement path recounts from testingLogs regardless.
       daysCompleted: 0,
+      // ---- the miss rule, pinned for life like the window ---------------
+      // Its presence is what opts this commitment into early removal on the
+      // (allowedMisses + 1)th miss; see lib/misses.js. The miss COUNT is never
+      // stored while live - it is re-derived from the logs at every decision.
+      allowedMisses: COMMITMENT_ALLOWED_MISSES,
+      // Earliest instant the miss limit could be crossed if the tester never
+      // checks in. A sweep-candidate hint only, refreshed by each check-in;
+      // the settlement re-derives everything and never trusts it.
+      removalCheckAt: Timestamp.fromMillis(removalCheckAtMillis({
+        fromDayKey: window.claimedDayKey,
+        missedSoFar: 0,
+        allowedMisses: COMMITMENT_ALLOWED_MISSES,
+        timeZone: window.timeZone,
+      })),
       status: "ready",
       lockTxId: entryId,
       settlementTxId: null,
@@ -483,6 +521,10 @@ function expiryRefusalMessage(expiry) {
       return "That assignment has no pinned timezone, so its deadline cannot be determined.";
     case "invalidWindow":
       return "That assignment has no valid testing window.";
+    // Never reached for a refusal - `tooManyMisses` is an expired verdict -
+    // but named so a future caller cannot fall through to the default.
+    case FAILURE_REASON_TOO_MANY_MISSES:
+      return "That commitment has missed more testing days than allowed.";
     default:
       return "That commitment is not eligible for forfeiture.";
   }
@@ -513,6 +555,11 @@ function expiryRefusalMessage(expiry) {
  * the day arithmetic cannot forfeit a commitment that has plainly not run its
  * calendar length.
  *
+ * THE ONE EXCEPTION is a commitment claimed under the miss rule whose pinned
+ * verdict is `tooManyMisses`: that ends it before its calendar length, by
+ * design, so gate 1 waives ONLY its elapsed-time check for that verdict. Gate 2
+ * is still what decides, from the logs the server wrote and the server clock.
+ *
  * FAILS CLOSED ON MISSING STATE. An assignment with no readable pinned zone
  * cannot be forfeited at all: no deadline can be derived for it, and guessing
  * one would move it. Every assignment carrying a lock has a pinned window -
@@ -540,15 +587,26 @@ async function runForfeitCommitment(
     // actually did the work would be the worst possible bug here.
     const qualifyingDays = await countQualifyingDays(tx, db, assignmentId);
 
-    const eligible = checkForfeitEligible({
-      status: assignmentSnap.get("status"),
-      lockTxId,
-      createdAtMillis: millisOf(assignmentSnap.get("createdAt")),
-      windowDays: assignmentSnap.get("windowDays"),
-      daysRequired: assignmentSnap.get("daysRequired"),
-      qualifyingDays,
-      nowMillis,
-    });
+    // Gate 1, BEFORE any further read - exactly where it always ran, so every
+    // refusal (settled, no stake, calendar not elapsed) still happens before
+    // the transaction reads anything else. For a commitment under the miss
+    // rule the calendar check is provisionally waived here, because the third
+    // miss may legitimately end it early; it is re-applied below unless the
+    // pinned verdict really is `tooManyMisses`. A legacy commitment takes the
+    // exact path it always did.
+    const allowedMisses = assignmentSnap.get("allowedMisses");
+    const gate1 = (earlyRemoval) =>
+      checkForfeitEligible({
+        status: assignmentSnap.get("status"),
+        lockTxId,
+        createdAtMillis: millisOf(assignmentSnap.get("createdAt")),
+        windowDays: assignmentSnap.get("windowDays"),
+        daysRequired: assignmentSnap.get("daysRequired"),
+        qualifyingDays,
+        nowMillis,
+        earlyRemoval,
+      });
+    const eligible = gate1(missRuleApplies(allowedMisses));
     if (!eligible.ok) {
       throw new HttpsError(eligible.code, eligible.message);
     }
@@ -566,6 +624,10 @@ async function runForfeitCommitment(
       toDayKey: lastEligibleDayKey,
       tx,
     });
+    const loggedDayKeys = await readMissEvidenceInTx(tx, db, assignmentSnap, {
+      outageRecords,
+      nowMillis,
+    });
 
     // The pinned local-day window, with outage credit applied. This is the
     // same decision `evaluateWindowExpiry` reports read-only, re-derived here
@@ -582,7 +644,19 @@ async function runForfeitCommitment(
       daysRequired: assignmentSnap.get("daysRequired"),
       outageRecords,
       nowMillis,
+      allowedMisses,
+      loggedDayKeys,
     });
+
+    // The calendar waiver holds ONLY for a third-miss removal, and only
+    // because the pinned-window verdict (gate 2) independently says so.
+    const earlyRemoval = expiry.expired === true && expiry.reason === FAILURE_REASON_TOO_MANY_MISSES;
+    if (missRuleApplies(allowedMisses) && !earlyRemoval) {
+      const calendar = gate1(false);
+      if (!calendar.ok) {
+        throw new HttpsError(calendar.code, calendar.message);
+      }
+    }
     if (!expiry.expired) {
       throw new HttpsError(
         "failed-precondition",
@@ -620,6 +694,13 @@ async function runForfeitCommitment(
       // source of truth it would become if the evaluator read it back.
       creditedOutageDays: expiry.creditedOutageDays,
       effectiveLastEligibleDayKey: expiry.effectiveLastEligibleDayKey,
+      // Why it failed: `windowClosedShort` or `tooManyMisses`. The miss
+      // count is written only here, frozen at settlement, for the same
+      // audit-trail reason as the outage fields above.
+      failureReason: expiry.reason,
+      ...(expiry.missedDays === null || expiry.missedDays === undefined
+        ? {}
+        : { missedDays: expiry.missedDays }),
       forfeitedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       // A failed tester no longer occupies one of the app's slots.
@@ -636,6 +717,8 @@ async function runForfeitCommitment(
       qualifyingDays,
       creditedOutageDays: expiry.creditedOutageDays,
       effectiveLastEligibleDayKey: expiry.effectiveLastEligibleDayKey,
+      failureReason: expiry.reason,
+      missedDays: expiry.missedDays,
       wallet: {
         available: staged.wallet.available,
         locked: staged.wallet.locked,
@@ -751,6 +834,10 @@ async function runCancelCommitment(
       toDayKey: lastEligibleDayKey,
       tx,
     });
+    const loggedDayKeys = await readMissEvidenceInTx(tx, db, assignmentSnap, {
+      outageRecords,
+      nowMillis,
+    });
     const expiry = checkCommitmentExpiry({
       status: assignmentSnap.get("status"),
       lockTxId,
@@ -762,6 +849,11 @@ async function runCancelCommitment(
       daysRequired: assignmentSnap.get("daysRequired"),
       outageRecords,
       nowMillis,
+      // The miss rule too: a tester past their third miss has lost the
+      // commitment exactly as surely as one whose window closed short, so the
+      // same refusal protects both from racing the sweep.
+      allowedMisses: assignmentSnap.get("allowedMisses"),
+      loggedDayKeys,
     });
 
     const eligible = checkCancelEligible({

@@ -255,6 +255,10 @@ function checkTestingDayEligible({
   qualifyingDays,
   daysRequired = COMMITMENT_DAYS_REQUIRED,
   alreadyLoggedToday,
+  // Miss rule inputs, both server-derived; see lib/misses.js. A legacy
+  // commitment passes no `allowedMisses` and is never judged on misses.
+  missedDays = null,
+  allowedMisses = null,
 }) {
   if (status === "completed" || status === "failed" || status === "missed" || status === "cancelled") {
     return {
@@ -324,6 +328,22 @@ function checkTestingDayEligible({
       code: "alreadyLogged",
       message: "You have already recorded testing for today.",
       alreadyLogged: true,
+    };
+  }
+
+  // Past the miss limit, the commitment is lost even though the sweep may not
+  // have settled it yet. Checked after the idempotent same-day case: misses
+  // only accrue at a day's end, so a day already logged today was logged
+  // while the commitment was still alive.
+  if (
+    Number.isInteger(allowedMisses) && allowedMisses >= 0 &&
+    Number.isInteger(missedDays) && missedDays > allowedMisses
+  ) {
+    return {
+      ok: false,
+      code: "failed-precondition",
+      message: "This commitment has missed more testing days than allowed.",
+      tooManyMisses: true,
     };
   }
 

@@ -47,7 +47,10 @@ const {
   testingLogId,
 } = require("../lib/testingDays");
 const { checkInvariants } = require("../lib/wallet");
-const { COMMITMENT_DAYS_REQUIRED, COMMITMENT_WINDOW_DAYS } = require("../lib/constants");
+const { COMMITMENT_DAYS_REQUIRED, LEGACY_COMMITMENT_WINDOW_DAYS } = require("../lib/constants");
+// Fixtures in this file are commitments claimed BEFORE the miss rule: an 18-day
+// window and no `allowedMisses`. Pinned explicitly so they keep proving the
+// legacy rules are untouched; the miss rule has misses.concurrency.test.js.
 
 const PROJECT_ID = "apptesting-concurrency-test";
 const IST = "Asia/Kolkata";
@@ -57,7 +60,7 @@ const DEV = "dev1";
 const C1 = cycleAssignmentId(APP, TESTER, 1);
 
 const CLAIMED_AT = Date.parse("2026-03-01T06:00:00Z");
-const W = deriveWindow({ claimedAtMillis: CLAIMED_AT, timeZone: IST });
+const W = deriveWindow({ claimedAtMillis: CLAIMED_AT, timeZone: IST, windowDays: LEGACY_COMMITMENT_WINDOW_DAYS });
 
 const assignmentPath = (id = C1) => `testingAssignments/${id}`;
 const claimPath = () => `activeClaims/${activeClaimId(APP, TESTER)}`;
@@ -113,7 +116,7 @@ async function seedCommitment({ done = 13, status = "inProgress", outageDayKeys 
     cycle: 1,
     commitmentAmount: 50,
     daysRequired: COMMITMENT_DAYS_REQUIRED,
-    windowDays: COMMITMENT_WINDOW_DAYS,
+    windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
     timeZone: W.timeZone,
     timeZoneSource: "default",
     claimedDayKey: W.claimedDayKey,
