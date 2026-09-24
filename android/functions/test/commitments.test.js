@@ -46,17 +46,20 @@ const {
   checkForfeitEligible,
   checkCancelEligible,
   cancelEntryId,
+  holdsCapacity,
+  releasedTesterCount,
   windowDeadlineMillis,
   MILLIS_PER_DAY,
 } = require("../lib/commitments");
 const { runCompletionVerification } = require("../completion");
 const { checkInvariants } = require("../lib/wallet");
-const { deriveWindow } = require("../lib/testingDays");
+const { deriveWindow, addDays, startOfLocalDayMillis } = require("../lib/testingDays");
 const {
   DEFAULT_COMMITMENT_AMOUNT,
   COMMITMENT_DAYS_REQUIRED,
   COMMITMENT_WINDOW_DAYS,
   MAX_COMMITMENT_AMOUNT,
+  REQUIRED_TESTER_COUNT,
 } = require("../lib/constants");
 
 const APP = "app1";
@@ -99,19 +102,32 @@ function fakeDb(seed = {}, opts = {}) {
     });
   }
 
+  /** Applies the subset of query operators this codebase actually uses. */
+  function passes(id, data, [field, op, value]) {
+    // `__name__` filters carry a DocumentReference; compare on the id. This is
+    // how the outage registry is read by day-key range.
+    if (field === "__name__") {
+      const other = (value && value.path ? value.path : String(value)).split("/").pop();
+      if (op === ">=") return id >= other;
+      if (op === "<=") return id <= other;
+      return id === other;
+    }
+    return data[field] === value;
+  }
+
   function matching(collection, filters) {
     const prefix = `${collection}/`;
     return [...store.entries()]
       .filter(([p]) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/"))
-      .filter(([, rec]) => filters.every(([field, value]) => rec.data[field] === value))
-      .map(([p, rec]) => ({ path: p, id: p.slice(prefix.length), rec }));
+      .map(([p, rec]) => ({ path: p, id: p.slice(prefix.length), rec }))
+      .filter(({ id, rec }) => filters.every((f) => passes(id, rec.data, f)));
   }
 
   function collectionRef(name, filters = []) {
     return {
       __query: { collection: name, filters },
       where(field, op, value) {
-        return collectionRef(name, [...filters, [field, value]]);
+        return collectionRef(name, [...filters, [field, op, value]]);
       },
       count() {
         return { __count: { collection: name, filters } };
@@ -1016,13 +1032,36 @@ test("locked always equals the stake of the one live commitment", async () => {
 
 const CANCEL_PATH = `users/${TESTER}/coinTransactions/${cancelEntryId(C1)}`;
 
-const cancel = (db, { assignmentId = C1, actorId = TESTER, isAdmin = false } = {}) =>
+/**
+ * Noon IST on day 5 of the `claimedWorld` window. Cancellation is refused once
+ * a window has closed short, and `claimedWorld` pins its window to DAY0 - so a
+ * cancel that should be LIVE has to say when it happens, as forfeiture does.
+ */
+const IN_WINDOW = DAY0 + 5 * MILLIS_PER_DAY;
+
+const cancel = (
+  db,
+  { assignmentId = C1, actorId = TESTER, isAdmin = false, nowMillis = IN_WINDOW } = {},
+) =>
   runCancelCommitment(db, {
     assignmentId,
     actorId,
     actorKind: isAdmin ? "admin" : "user",
     isAdmin,
+    nowMillis,
   });
+
+/**
+ * A claimed commitment whose window is open RIGHT NOW. For the callable
+ * wrapper, which takes no clock from anyone - it always uses the server's.
+ */
+function liveWorld({ logs = 3 } = {}) {
+  const seed = claimedWorld({ logs });
+  const claimedAt = Date.now() - 2 * MILLIS_PER_DAY;
+  seed[C1_PATH].createdAt = { toMillis: () => claimedAt };
+  Object.assign(seed[C1_PATH], pinnedClock(claimedAt));
+  return seed;
+}
 
 test("cancel entry ids are deterministic and distinct from the other settlements", () => {
   assert.equal(cancelEntryId("app1__t1__c1"), "cancel_app1__t1__c1");
@@ -1160,8 +1199,11 @@ test("a cancelled commitment cannot then be completed or forfeited", async () =>
   assert.equal(done.__has(`users/${TESTER}/coinTransactions/${unlockEntryId(C1)}`), false);
   assertWalletSound(done);
 
-  const lost = fakeDb(expiredWorld({ logs: 2 }));
-  await cancel(lost);
+  // Cancelled while its window was still open; forfeiture then comes along
+  // after the window has shut and must find nothing left to take.
+  const lostSeed = expiredWorld({ logs: 2 });
+  const lost = fakeDb(lostSeed);
+  await cancel(lost, { nowMillis: lostSeed[C1_PATH].createdAt.toMillis() + 5 * MILLIS_PER_DAY });
   await assert.rejects(forfeit(lost), /already been settled/);
   assert.equal(lost.__has(`users/${TESTER}/coinTransactions/${forfeitEntryId(C1)}`), false);
   assert.equal(lost.__read(WALLET_PATH).forfeitedTotal, 0);
@@ -1218,7 +1260,7 @@ test("the cancel callable requires auth and an assignmentId", async () => {
 });
 
 test("the cancel callable ignores every field except assignmentId", async () => {
-  const db = fakeDb(claimedWorld({ logs: 3 }));
+  const db = fakeDb(liveWorld({ logs: 3 }));
 
   // Everything a hostile client might try to steer the settlement with.
   const outcome = await cancelTestingAssignmentImpl(db, {
@@ -1256,4 +1298,380 @@ test("the wallet invariant holds across the cancellation path", async () => {
     w.available + w.locked + w.forfeitedTotal,
     w.purchasedTotal + w.adjustmentNet,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Cancellation after the window has closed short
+//
+// Quitting early returns the stake. Quitting AFTER losing must not: once the
+// pinned window (with outage credit) has shut short of the requirement, the
+// commitment has failed, and a cancellation in the gap before the sweep runs
+// would let a tester who lost take their coins back anyway.
+// ---------------------------------------------------------------------------
+
+const W0 = deriveWindow({ claimedAtMillis: DAY0, timeZone: FIXTURE_TZ });
+/** The instant `claimedWorld`'s window shuts: IST midnight after its last day. */
+const W0_BOUNDARY = startOfLocalDayMillis(addDays(W0.lastEligibleDayKey, 1), FIXTURE_TZ);
+const HOUR = 60 * 60 * 1000;
+/** Noon on the day after the raw last eligible day - inside one day of outage credit. */
+const EXTRA_DAY_NOON = W0_BOUNDARY + 12 * HOUR;
+
+test("checkCancelEligible refuses only a window that has closed short", () => {
+  const live = { status: "inProgress", lockTxId: lockEntryId(C1) };
+
+  const refused = checkCancelEligible({ ...live, expiry: { expired: true, reason: "expired" } });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, "failed-precondition");
+  assert.match(refused.message, /closed short/);
+
+  // Every "not expired" verdict leaves cancellation open - including the ones
+  // forfeiture also refuses on, so such a commitment always has a way out.
+  for (const reason of ["windowOpen", "requirementMet", "noTimeZone", "invalidWindow"]) {
+    assert.equal(
+      checkCancelEligible({ ...live, expiry: { expired: false, reason } }).ok,
+      true,
+      `${reason} must not block a cancellation`,
+    );
+  }
+  // A terminal status is still refused first, whatever the verdict says.
+  assert.match(
+    checkCancelEligible({ status: "failed", lockTxId: lockEntryId(C1), expiry: { expired: true } })
+      .message,
+    /already been settled/,
+  );
+});
+
+test("cancelling after the window closed short is refused, and nothing moves", async () => {
+  const seed = claimedWorld({ logs: 3 });
+  seed["apps/app1"].testerCount = 1;
+  seed[C1_PATH].capacityHeld = true;
+  const db = fakeDb(seed);
+
+  await assert.rejects(cancel(db, { nowMillis: W0_BOUNDARY }), /closed short/);
+
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.locked, 50, "the stake stays locked for the forfeiture path");
+  assert.equal(w.available, 0);
+  assert.equal(db.__has(CANCEL_PATH), false);
+  assert.equal(db.__read(C1_PATH).status, "inProgress");
+  assert.equal(db.__has(CLAIM_PATH), true);
+  assert.equal(db.__read("apps/app1").testerCount, 1, "a refused cancel frees no slot");
+  assert.equal(db.__read(C1_PATH).capacityHeld, true);
+  assert.equal(db.__committed.length, 0);
+
+  // Forfeiture - and only forfeiture - then settles it.
+  await forfeit(db);
+  assert.equal(db.__read(C1_PATH).status, "failed");
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 50);
+  assertWalletSound(db);
+});
+
+test("cancel-after-expiry does not wait for the sweep: it is refused days later too", async () => {
+  const db = fakeDb(claimedWorld({ logs: 13 }));
+  for (const later of [W0_BOUNDARY + HOUR, W0_BOUNDARY + 30 * MILLIS_PER_DAY]) {
+    await assert.rejects(cancel(db, { nowMillis: later }), /closed short/);
+  }
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+});
+
+test("cancellation stays allowed on the last eligible day, up to the boundary", async () => {
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+  const outcome = await cancel(db, { nowMillis: W0_BOUNDARY - 1 });
+  assert.equal(outcome.cancelled, true);
+  assert.equal(db.__read(WALLET_PATH).available, 50);
+  assertWalletSound(db);
+});
+
+test("cancellation stays allowed inside an active window, from day 1", async () => {
+  const firstDay = startOfLocalDayMillis(W0.firstEligibleDayKey, FIXTURE_TZ) + HOUR;
+  const db = fakeDb(claimedWorld({ logs: 0 }));
+  assert.equal((await cancel(db, { nowMillis: firstDay })).cancelled, true);
+});
+
+test("a commitment that met its requirement is not 'closed short'", async () => {
+  // Only a SHORT window blocks cancellation. Fourteen days means the tester is
+  // owed their stake back either way; cancelling returns the same 50.
+  const db = fakeDb(claimedWorld({ logs: 14 }));
+  const outcome = await cancel(db, { nowMillis: W0_BOUNDARY + MILLIS_PER_DAY });
+  assert.equal(outcome.amount, 50);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 0);
+});
+
+test("cancellation stays allowed inside an outage-extended window", async () => {
+  const outage = {
+    [`systemHealth/${W0.firstEligibleDayKey}`]: {
+      dayKey: W0.firstEligibleDayKey,
+      degraded: true,
+      scope: "global",
+    },
+  };
+
+  const withOutage = fakeDb({ ...claimedWorld({ logs: 3 }), ...outage });
+  const outcome = await cancel(withOutage, { nowMillis: EXTRA_DAY_NOON });
+  assert.equal(outcome.cancelled, true);
+  assert.equal(withOutage.__read(WALLET_PATH).available, 50);
+  assertWalletSound(withOutage);
+
+  // The same instant with no outage declared is past the deadline.
+  const without = fakeDb(claimedWorld({ logs: 3 }));
+  await assert.rejects(cancel(without, { nowMillis: EXTRA_DAY_NOON }), /closed short/);
+
+  // And the credit is exactly one day: the day after that is shut again.
+  const past = fakeDb({ ...claimedWorld({ logs: 3 }), ...outage });
+  await assert.rejects(
+    cancel(past, { nowMillis: EXTRA_DAY_NOON + MILLIS_PER_DAY }),
+    /closed short/,
+  );
+});
+
+test("an outage on an unrelated app does not extend the cancellation window", async () => {
+  const db = fakeDb({
+    ...claimedWorld({ logs: 3 }),
+    [`systemHealth/${W0.firstEligibleDayKey}`]: {
+      dayKey: W0.firstEligibleDayKey,
+      degraded: true,
+      scope: "app",
+      appId: "some_other_app",
+    },
+  });
+  await assert.rejects(cancel(db, { nowMillis: EXTRA_DAY_NOON }), /closed short/);
+});
+
+test("the cancel callable takes no clock from the client", async () => {
+  // claimedWorld's window closed in 2023. A client naming an in-window instant
+  // must not be able to reopen it: the callable uses the server clock only.
+  const db = fakeDb(claimedWorld({ logs: 3 }));
+  await assert.rejects(
+    cancelTestingAssignmentImpl(db, {
+      auth: { uid: TESTER },
+      data: {
+        assignmentId: C1,
+        nowMillis: IN_WINDOW,
+        now: IN_WINDOW,
+        todayKey: W0.firstEligibleDayKey,
+      },
+    }),
+    /closed short/,
+  );
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+});
+
+// ---------------------------------------------------------------------------
+// Suspended testers and cancellation
+//
+// Approved policy: a suspended tester MAY cancel a live commitment. It returns
+// only their own locked coins - no value is granted - and refusing it would
+// strand those coins until forfeiture, since they cannot check in.
+// ---------------------------------------------------------------------------
+
+test("a suspended tester may cancel, and gets back exactly their own stake", async () => {
+  const seed = liveWorld({ logs: 3 });
+  seed[`users/${TESTER}`] = { uid: TESTER, isSuspended: true };
+  const db = fakeDb(seed);
+
+  const outcome = await cancelTestingAssignmentImpl(db, {
+    auth: { uid: TESTER },
+    data: { assignmentId: C1 },
+  });
+
+  assert.equal(outcome.cancelled, true);
+  assert.equal(outcome.amount, 50);
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.available, 50, "their own 50, back");
+  assert.equal(w.locked, 0);
+  assert.equal(w.forfeitedTotal, 0);
+  assert.equal(w.adjustmentNet + w.purchasedTotal, 50, "no value created");
+  assert.equal(db.__read(CANCEL_PATH).source, "cancellation");
+  assertWalletSound(db);
+});
+
+test("suspension grants no exemption from the closed-window rule", async () => {
+  const seed = claimedWorld({ logs: 3 });
+  seed[`users/${TESTER}`] = { uid: TESTER, isSuspended: true };
+  const db = fakeDb(seed);
+  await assert.rejects(cancel(db, { nowMillis: W0_BOUNDARY }), /closed short/);
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+});
+
+test("a suspended user still cannot cancel someone else's commitment", async () => {
+  const seed = liveWorld({ logs: 3 });
+  seed["users/intruder"] = { uid: "intruder", isSuspended: true };
+  const db = fakeDb(seed);
+  await assert.rejects(
+    cancelTestingAssignmentImpl(db, { auth: { uid: "intruder" }, data: { assignmentId: C1 } }),
+    /belongs to another tester/,
+  );
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+});
+
+// ---------------------------------------------------------------------------
+// Capacity accounting
+//
+// `testerCount` counts testers whose commitment is live or completed. A claim
+// takes a slot; cancellation and forfeiture give it back in the settlement
+// transaction; completion keeps it. `capacityHeld` on the assignment is what
+// makes the release happen at most once.
+// ---------------------------------------------------------------------------
+
+test("holdsCapacity reads the flag, and treats a pre-flag staked claim as held", () => {
+  assert.equal(holdsCapacity({ capacityHeld: true, lockTxId: "lock_x" }), true);
+  assert.equal(holdsCapacity({ capacityHeld: false, lockTxId: "lock_x" }), false);
+  // Claimed before the flag existed: that claim incremented the counter.
+  assert.equal(holdsCapacity({ lockTxId: "lock_x" }), true);
+  // Reward-era: never claimed through this path, nothing of ours to release.
+  assert.equal(holdsCapacity({}), false);
+  assert.equal(holdsCapacity({ capacityHeld: null, lockTxId: null }), false);
+});
+
+test("releasedTesterCount never goes negative, whatever is stored", () => {
+  assert.equal(releasedTesterCount(5), 4);
+  assert.equal(releasedTesterCount(1), 0);
+  assert.equal(releasedTesterCount(0), 0);
+  assert.equal(releasedTesterCount(-3), 0);
+  assert.equal(releasedTesterCount(undefined), 0);
+  assert.equal(releasedTesterCount("7"), 0);
+  assert.equal(releasedTesterCount(2.5), 0);
+});
+
+/** A commitment that holds a slot in an app with `testerCount` taken. */
+function heldWorld({ logs = 3, testerCount = 5, expired = false } = {}) {
+  const seed = expired ? expiredWorld({ logs }) : claimedWorld({ logs });
+  seed["apps/app1"].testerCount = testerCount;
+  seed[C1_PATH].capacityHeld = true;
+  return seed;
+}
+
+test("a claim takes exactly one slot and records that it holds it", async () => {
+  const db = fakeDb(world({ available: 50 }));
+  const outcome = await claim(db);
+  assert.equal(db.__read("apps/app1").testerCount, 1);
+  assert.equal(db.__read(`testingAssignments/${outcome.assignmentId}`).capacityHeld, true);
+});
+
+test("terminal cancellation gives the slot back, in the same transaction", async () => {
+  const db = fakeDb(heldWorld({ testerCount: 5 }));
+  await cancel(db);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(db.__read(C1_PATH).capacityHeld, false);
+  const paths = db.__committed.map((w) => w.path);
+  assert.ok(paths.includes("apps/app1"), "the release is part of the cancellation");
+  assert.ok(paths.includes(CANCEL_PATH));
+  assert.equal(db.__state.attempts, 1, "one transaction, not two");
+});
+
+test("terminal forfeiture gives the slot back, in the same transaction", async () => {
+  const db = fakeDb(heldWorld({ testerCount: 5, expired: true }));
+  await forfeit(db);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(db.__read(C1_PATH).capacityHeld, false);
+  assert.equal(db.__read(C1_PATH).status, "failed");
+  assert.equal(db.__state.attempts, 1, "one transaction, not two");
+});
+
+test("completion keeps the slot: a tester who finished is one the developer has", async () => {
+  const db = fakeDb(heldWorld({ logs: 14, testerCount: 5 }));
+  await verify(db);
+  assert.equal(db.__read("apps/app1").testerCount, 5);
+  assert.equal(db.__read(C1_PATH).capacityHeld, true);
+  assert.equal(db.__read(C1_PATH).status, "completed");
+});
+
+test("testerCount cannot become negative on release", async () => {
+  for (const stored of [0, -2, undefined, "3"]) {
+    const seed = heldWorld({ testerCount: 0 });
+    if (stored === undefined) delete seed["apps/app1"].testerCount;
+    else seed["apps/app1"].testerCount = stored;
+    const db = fakeDb(seed);
+    await cancel(db);
+    assert.equal(db.__read("apps/app1").testerCount, 0, `stored ${String(stored)}`);
+  }
+});
+
+test("a claim made before capacity was tracked is released exactly once", async () => {
+  const seed = claimedWorld({ logs: 3 });
+  seed["apps/app1"].testerCount = 3;
+  assert.equal(seed[C1_PATH].capacityHeld, undefined);
+  const db = fakeDb(seed);
+
+  await cancel(db);
+  assert.equal(db.__read("apps/app1").testerCount, 2);
+  assert.equal(db.__read(C1_PATH).capacityHeld, false);
+
+  await assert.rejects(cancel(db), /already been settled/);
+  await assert.rejects(forfeit(db), /already been settled/);
+  assert.equal(db.__read("apps/app1").testerCount, 2, "no second release");
+});
+
+test("a settlement that holds no slot leaves the counter alone", async () => {
+  const seed = heldWorld({ testerCount: 5 });
+  seed[C1_PATH].capacityHeld = false;
+  const db = fakeDb(seed);
+  await cancel(db);
+  assert.equal(db.__read("apps/app1").testerCount, 5);
+  assert.equal(db.__committed.some((w) => w.path === "apps/app1"), false);
+});
+
+test("a release against a deleted app still settles, and writes no app document", async () => {
+  const seed = heldWorld({ testerCount: 5 });
+  delete seed["apps/app1"];
+  const db = fakeDb(seed);
+  await cancel(db);
+  assert.equal(db.__has("apps/app1"), false);
+  assert.equal(db.__read(C1_PATH).status, "cancelled");
+  assert.equal(db.__read(C1_PATH).capacityHeld, false);
+});
+
+test("claim -> cancel -> reclaim, repeated, never inflates testerCount", async () => {
+  const db = fakeDb(world({ available: 50 }));
+  const rounds = REQUIRED_TESTER_COUNT + 5;
+  const ids = [];
+  for (let round = 1; round <= rounds; round += 1) {
+    const c = await claim(db);
+    ids.push(c.assignmentId);
+    assert.equal(db.__read("apps/app1").testerCount, 1, `round ${round}: one tester, one slot`);
+    await cancel(db, { assignmentId: c.assignmentId, nowMillis: Date.now() });
+    assert.equal(db.__read("apps/app1").testerCount, 0, `round ${round}: slot returned`);
+  }
+  // More rounds than the cap: before the fix this loop filled the app alone.
+  assert.equal(new Set(ids).size, rounds, "every cycle got its own id");
+  assert.equal(ids[rounds - 1], cycleAssignmentId(APP, TESTER, rounds));
+  assertWalletSound(db);
+});
+
+test("a completed tester who returns for a new cycle takes no second slot", async () => {
+  const db = fakeDb(heldWorld({ logs: 14, testerCount: 1 }));
+  await verify(db);
+
+  const c2 = await claim(db);
+  assert.equal(c2.cycle, 2);
+  assert.equal(db.__read("apps/app1").testerCount, 1, "still one tester");
+  assert.equal(db.__read(`testingAssignments/${c2.assignmentId}`).capacityHeld, false);
+
+  // Quitting cycle 2 cannot release the slot cycle 1 still holds.
+  await cancel(db, { assignmentId: c2.assignmentId, nowMillis: Date.now() });
+  assert.equal(db.__read("apps/app1").testerCount, 1);
+  assert.equal(db.__read(C1_PATH).capacityHeld, true);
+});
+
+test("a slot freed by cancellation can be claimed by a different tester", async () => {
+  const seed = heldWorld({ testerCount: REQUIRED_TESTER_COUNT });
+  seed["users/tester2"] = { uid: "tester2" };
+  seed["users/tester2/wallet/balance"] = {
+    available: 50,
+    locked: 0,
+    forfeitedTotal: 0,
+    purchasedTotal: 0,
+    adjustmentNet: 50,
+    ledgerCount: 1,
+    lastEntryId: "grant_seed",
+    schemaVersion: 2,
+  };
+  const db = fakeDb(seed);
+
+  await assert.rejects(claim(db, { testerId: "tester2" }), /all the testers it needs/);
+  await cancel(db);
+  assert.equal(db.__read("apps/app1").testerCount, REQUIRED_TESTER_COUNT - 1);
+
+  await claim(db, { testerId: "tester2" });
+  assert.equal(db.__read("apps/app1").testerCount, REQUIRED_TESTER_COUNT);
 });

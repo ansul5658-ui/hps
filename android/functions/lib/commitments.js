@@ -263,25 +263,32 @@ function checkUnlockEligible({ status, daysRequired, qualifyingDays, lockTxId })
 /**
  * May this commitment be cancelled, giving the staked coins back?
  *
- * Deliberately the LOOSEST of the three settlement gates, and deliberately so
- * for one reason: cancelling returns the tester's own coins to them. A wrong
- * `false` here traps someone in a commitment they want out of; a wrong `true`
- * costs them nothing, because the coins land back in `available`. That is the
- * opposite risk profile to `checkForfeitEligible`, which guards a destructive
- * movement and therefore refuses on every uncertainty.
+ * The LOOSEST of the three settlement gates while the window is open:
+ * cancelling returns the tester's own coins to them, so a tester may walk away
+ * on day 1 or day 17 - the product rule is that quitting early returns the
+ * stake. There is no day-count check and no minimum time served.
  *
- * So there is no window check, no day-count check and no deadline here. A
- * tester may walk away on day 1 or day 13; the product rule is that quitting
- * early returns the stake, not that quitting is only allowed at certain times.
+ * WHAT IT REFUSES
+ *   * Settling twice. `isTerminalStatus` covers completed, failed, missed and
+ *     cancelled, so a commitment that already settled by any route cannot then
+ *     be cancelled into a second coin movement. That is the advisory half of
+ *     the guarantee; the binding half is the deterministic ledger id written
+ *     with `tx.create`.
+ *   * Quitting AFTER losing. Once the pinned window (with declared outage
+ *     credit) has closed short of the requirement, the commitment has already
+ *     failed; the only thing left undecided is WHEN the sweep settles it.
+ *     Allowing a cancel in that gap would turn every forfeiture into a race the
+ *     tester can win by calling first - between IST midnight and the 03:30
+ *     sweep, or indefinitely if a sweep run fails. So `expiry` here is the very
+ *     verdict `runForfeitCommitment` acts on, derived from the same stored
+ *     window, the same outage records and the server clock; the two paths can
+ *     never disagree about whether the window has closed.
  *
- * What it DOES refuse is settling twice. `isTerminalStatus` covers completed,
- * failed, missed and cancelled, so a commitment that already settled by any
- * route cannot then be cancelled into a second coin movement. That check is
- * the advisory half of the guarantee; the binding half is the deterministic
- * ledger id written with `tx.create`, which holds even if two transactions
- * read a non-terminal status at the same instant.
+ * An `expiry` that cannot be derived (no zone, corrupt window) reads as "not
+ * expired", exactly as it does for forfeiture - such a commitment cannot be
+ * forfeited either, and cancelling is then the only way its coins come back.
  */
-function checkCancelEligible({ status, lockTxId }) {
+function checkCancelEligible({ status, lockTxId, expiry = null }) {
   if (isTerminalStatus(status)) {
     return {
       ok: false,
@@ -298,7 +305,45 @@ function checkCancelEligible({ status, lockTxId }) {
       message: "That assignment has no committed coins to return.",
     };
   }
+  if (expiry && expiry.expired === true) {
+    return {
+      ok: false,
+      code: "failed-precondition",
+      message:
+        "That commitment's testing window has closed short of its requirement, " +
+        "so it can no longer be cancelled.",
+    };
+  }
   return { ok: true };
+}
+
+/**
+ * Whether this assignment's claim is still counted in its app's `testerCount`.
+ *
+ * WHAT A SLOT MEANS
+ * `testerCount` is the number of testers whose commitment is live or
+ * completed - the testers the developer actually has. A claim takes a slot; a
+ * cancellation or forfeiture gives it back, in the same transaction as the
+ * settlement; a completion keeps it. `capacityHeld` on the assignment records
+ * which of those is true, so a release happens at most once however many
+ * settlements race: only the one that commits sees `capacityHeld: true`.
+ *
+ * An assignment claimed before this field existed has no `capacityHeld`. Every
+ * such claim incremented the counter and nothing ever released it, so a staked
+ * one reads as still holding its slot. A reward-era assignment staked nothing
+ * and was counted by the retired push-matching path, not by a claim; it is not
+ * this path's to release.
+ */
+function holdsCapacity({ capacityHeld, lockTxId }) {
+  if (capacityHeld === true) return true;
+  if (capacityHeld === false) return false;
+  return Boolean(lockTxId);
+}
+
+/** The counter after one slot is released. Never negative, whatever is stored. */
+function releasedTesterCount(testerCount) {
+  const current = Number.isInteger(testerCount) ? testerCount : 0;
+  return Math.max(0, current - 1);
 }
 
 function checkForfeitEligible({
@@ -386,5 +431,7 @@ module.exports = {
   checkUnlockEligible,
   checkForfeitEligible,
   checkCancelEligible,
+  holdsCapacity,
+  releasedTesterCount,
   windowDeadlineMillis,
 };

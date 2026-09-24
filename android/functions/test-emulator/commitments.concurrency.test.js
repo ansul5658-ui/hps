@@ -29,6 +29,7 @@ const {
   joinTestingAssignmentImpl,
   runForfeitCommitment,
   adminForfeitCommitmentImpl,
+  runCancelCommitment,
 } = require("../commitments");
 const { runCompletionVerification } = require("../completion");
 const {
@@ -807,5 +808,166 @@ test("the full lifecycle leaves a complete, auditable ledger", async () => {
     assert.equal(d.get("assignmentId"), c.assignmentId);
     assert.equal(d.get("appId"), APP_A);
     assert.equal(d.get("schemaVersion"), 2);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Capacity: the final slot, and giving slots back
+//
+// `testerCount` counts testers whose commitment is live or completed. The
+// claim reads the app document it writes, so the last slot cannot be raced
+// past the cap; cancellation and forfeiture give a slot back in the same
+// transaction as the settlement.
+// ---------------------------------------------------------------------------
+
+/** A tester with a sound, funded wallet - written exactly as the server would. */
+async function fundTester(uid, available = 50) {
+  const batch = db.batch();
+  batch.set(db.doc(`users/${uid}`), { uid });
+  batch.set(db.doc(walletPath(uid)), {
+    available,
+    locked: 0,
+    forfeitedTotal: 0,
+    purchasedTotal: 0,
+    adjustmentNet: available,
+    ledgerCount: 1,
+    lastEntryId: "grant_seed",
+    schemaVersion: 2,
+  });
+  await batch.commit();
+}
+
+const testerCountOf = async (appId = APP_A) => (await db.doc(`apps/${appId}`).get()).get("testerCount");
+
+const cancelAs = (assignmentId, uid) =>
+  runCancelCommitment(db, { assignmentId, actorId: uid, actorKind: "user", isAdmin: false });
+
+/** One final-slot race: `n` funded testers, one free slot. */
+async function raceForFinalSlot(n) {
+  const { REQUIRED_TESTER_COUNT } = require("../lib/constants");
+  await seed({ available: 50 });
+  await db.doc(`apps/${APP_A}`).update({ testerCount: REQUIRED_TESTER_COUNT - 1 });
+  const racers = Array.from({ length: n }, (_, i) => `racer${i + 1}`);
+  await Promise.all(racers.map((uid) => fundTester(uid)));
+
+  const results = await Promise.allSettled(racers.map((uid) => claim(APP_A, uid)));
+  return { REQUIRED_TESTER_COUNT, racers, results };
+}
+
+test("funded final-slot race: exactly one of five funded testers gets the slot", async () => {
+  const { REQUIRED_TESTER_COUNT, racers, results } = await raceForFinalSlot(5);
+
+  const winners = racers.filter((_, i) => results[i].status === "fulfilled");
+  assert.equal(winners.length, 1, "exactly one claimant may take the last slot");
+  for (const [i, r] of results.entries()) {
+    if (r.status === "rejected") {
+      assert.match(r.reason.message, /all the testers it needs/, `${racers[i]} lost for the wrong reason`);
+    }
+  }
+  assert.equal(await testerCountOf(), REQUIRED_TESTER_COUNT, "final count is exactly the cap");
+
+  // Losers staked nothing and hold nothing.
+  for (const uid of racers) {
+    const state = await observe(uid);
+    assertInvariant(state.wallet, uid);
+    if (uid === winners[0]) {
+      assert.equal(state.wallet.locked, 50);
+      assert.equal(state.assignmentCount, 1);
+      assert.equal(state.claimCount, 1);
+    } else {
+      assert.equal(state.wallet.available, 50, `${uid} kept every coin`);
+      assert.equal(state.wallet.locked, 0);
+      assert.equal(state.assignmentCount, 0);
+      assert.equal(state.claimCount, 0);
+      assert.equal(state.ledgerCount, 0);
+    }
+  }
+});
+
+test("the funded final-slot race holds across 10 independent rounds", async () => {
+  for (let round = 0; round < 10; round += 1) {
+    await clearFirestore();
+    const { REQUIRED_TESTER_COUNT, results } = await raceForFinalSlot(3);
+    const wins = results.filter((r) => r.status === "fulfilled").length;
+    assert.equal(wins, 1, `round ${round}: ${wins} winners`);
+    assert.equal(await testerCountOf(), REQUIRED_TESTER_COUNT, `round ${round}: count`);
+  }
+});
+
+test("claim -> cancel -> reclaim: the freed slot goes to a later tester", async () => {
+  const { REQUIRED_TESTER_COUNT } = require("../lib/constants");
+  await seed({ available: 50 });
+  await fundTester("tester2");
+  await db.doc(`apps/${APP_A}`).update({ testerCount: REQUIRED_TESTER_COUNT - 1 });
+
+  const c1 = await claim(APP_A);
+  assert.equal(await testerCountOf(), REQUIRED_TESTER_COUNT);
+  await assert.rejects(claim(APP_A, "tester2"), /all the testers it needs/);
+
+  await cancelAs(c1.assignmentId, TESTER);
+  assert.equal(await testerCountOf(), REQUIRED_TESTER_COUNT - 1, "cancelling freed the slot");
+  const settledDoc = (await db.doc(`testingAssignments/${c1.assignmentId}`).get()).data();
+  assert.equal(settledDoc.status, "cancelled");
+  assert.equal(settledDoc.capacityHeld, false);
+
+  const c2 = await claim(APP_A, "tester2");
+  assert.equal(await testerCountOf(), REQUIRED_TESTER_COUNT);
+  assert.equal(
+    (await db.doc(`testingAssignments/${c2.assignmentId}`).get()).get("capacityHeld"),
+    true,
+  );
+
+  // The original tester can come back for a NEW cycle only once a slot frees.
+  await assert.rejects(claim(APP_A), /all the testers it needs/);
+});
+
+test("repeated same-tester cancel/reclaim cannot inflate testerCount", async () => {
+  const { REQUIRED_TESTER_COUNT } = require("../lib/constants");
+  await seed({ available: 50 });
+
+  const rounds = REQUIRED_TESTER_COUNT + 2;
+  for (let round = 1; round <= rounds; round += 1) {
+    const c = await claim(APP_A);
+    assert.equal(c.cycle, round);
+    assert.equal(await testerCountOf(), 1, `round ${round}: one tester holds one slot`);
+    await cancelAs(c.assignmentId, TESTER);
+    assert.equal(await testerCountOf(), 0, `round ${round}: slot returned`);
+  }
+
+  // Before the fix, this loop alone filled the app. Now a stranger can still join.
+  await fundTester("tester2");
+  await claim(APP_A, "tester2");
+  assert.equal(await testerCountOf(), 1);
+
+  const state = await observe();
+  assertInvariant(state.wallet);
+  assert.equal(state.wallet.available, 50, "every cancelled stake came back");
+  assert.equal(state.assignmentCount, rounds);
+  assert.equal(state.claimCount, 0);
+});
+
+test("a release racing a claim for the freed slot never miscounts", async () => {
+  // The app is full; tester1 holds a slot and quits at the same instant
+  // tester2 tries to join. Either order is legitimate - what must hold is that
+  // the counter equals the slots actually held afterwards.
+  const { REQUIRED_TESTER_COUNT } = require("../lib/constants");
+  for (let round = 0; round < 10; round += 1) {
+    await clearFirestore();
+    await seed({ available: 50 });
+    await fundTester("tester2");
+    await db.doc(`apps/${APP_A}`).update({ testerCount: REQUIRED_TESTER_COUNT - 1 });
+    const c1 = await claim(APP_A);
+
+    const [cancelled, joined] = await Promise.allSettled([
+      cancelAs(c1.assignmentId, TESTER),
+      claim(APP_A, "tester2"),
+    ]);
+    assert.equal(cancelled.status, "fulfilled", `round ${round}: the cancel must land`);
+
+    const expected = REQUIRED_TESTER_COUNT - 1 + (joined.status === "fulfilled" ? 1 : 0);
+    assert.equal(await testerCountOf(), expected, `round ${round}: count matches slots held`);
+    if (joined.status === "rejected") {
+      assert.match(joined.reason.message, /all the testers it needs/);
+    }
   }
 });

@@ -45,3 +45,40 @@ test("every non-scheduled function stays in REGION", () => {
     assert.deepEqual(fn.__endpoint.region, [REGION], `${name} left ${REGION}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// The deployed schedule, pinned LITERALLY.
+//
+// The tests above compare against the constants, so they would still pass if
+// someone edited a constant. These state the production layout as plain
+// strings: changing when money moves, or where a job runs, must mean changing
+// a test that says so in words.
+// ---------------------------------------------------------------------------
+
+test("evaluateExpiredCommitments runs exactly once a day at 03:30 IST", () => {
+  const trigger = functions.evaluateExpiredCommitments.__endpoint.scheduleTrigger;
+  assert.equal(trigger.schedule, "every day 03:30");
+  assert.equal(trigger.timeZone, "Asia/Kolkata");
+});
+
+test("refreshQuickTestPool runs exactly every 60 minutes, on IST", () => {
+  const trigger = functions.refreshQuickTestPool.__endpoint.scheduleTrigger;
+  assert.equal(trigger.schedule, "every 60 minutes");
+  assert.equal(trigger.timeZone, "Asia/Kolkata");
+});
+
+test("the production region layout, stated literally", () => {
+  for (const name of SCHEDULED) {
+    assert.deepEqual(functions[name].__endpoint.region, ["asia-south1"], `${name} region`);
+  }
+  for (const [name, fn] of Object.entries(functions)) {
+    if (SCHEDULED.includes(name)) continue;
+    assert.deepEqual(fn.__endpoint.region, ["asia-south2"], `${name} region`);
+    assert.equal(fn.__endpoint.scheduleTrigger, undefined, `${name} must not be scheduled`);
+  }
+  // The manual pool refresh is the callable twin of a scheduled job; it stays
+  // with the other callables, not with the scheduler.
+  const manual = functions.adminRefreshQuickTestPool.__endpoint;
+  assert.ok(manual.callableTrigger, "adminRefreshQuickTestPool is still callable");
+  assert.deepEqual(manual.region, ["asia-south2"]);
+});

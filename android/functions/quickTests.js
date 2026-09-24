@@ -338,13 +338,21 @@ const completeQuickTest = onCall({ region: REGION }, (request) =>
   completeQuickTestSession(getFirestore(), request),
 );
 
-/** Admin-only manual pool refresh, for support and for seeding a new install. */
-const adminRefreshQuickTestPool = onCall({ region: REGION }, async (request) => {
-  const db = getFirestore();
+/**
+ * Guard + manual pool refresh, split out so the authorization wiring is
+ * testable without the Functions runtime - the same split every other admin
+ * callable in this project uses.
+ */
+async function adminRefreshQuickTestPoolImpl(db, request) {
   const uid = requireAuth(request);
   await requireAdmin(db, uid);
   return runPoolRefresh(db, { actorId: uid });
-});
+}
+
+/** Admin-only manual pool refresh, for support and for seeding a new install. */
+const adminRefreshQuickTestPool = onCall({ region: REGION }, (request) =>
+  adminRefreshQuickTestPoolImpl(getFirestore(), request),
+);
 
 /**
  * Scheduled: rotate the pool hourly.
@@ -372,6 +380,7 @@ module.exports = {
   runCompleteQuickTest,
   completeQuickTestSession,
   runPoolRefresh,
+  adminRefreshQuickTestPoolImpl,
   dayCounterPath,
   appMarkerPath,
 };

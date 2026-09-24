@@ -303,6 +303,53 @@ test("a tester cannot write the settlement or lock transaction ids", async () =>
   await assertFails(updateDoc(doc(db, ASSIGNMENT(A_C1)), { settlementTxId: null }));
 });
 
+test("nobody can write capacityHeld to hold or free a slot from the client", async () => {
+  // `capacityHeld` decides whether settlement releases a tester slot. A tester
+  // who could clear it would keep their slot forever after cancelling; one who
+  // could set it on a completed cycle would get the counter decremented twice.
+  for (const db of [asUser(ALICE), asUser(DEV), asUser("admin1"), asUser("banned")]) {
+    await assertFails(updateDoc(doc(db, ASSIGNMENT(A_C1)), { capacityHeld: false }));
+    await assertFails(updateDoc(doc(db, ASSIGNMENT(A_C1)), { capacityHeld: true }));
+  }
+});
+
+test("an app owner cannot write testerCount on their own app", async () => {
+  await testEnv.withSecurityRulesDisabled((ctx) =>
+    updateDoc(doc(ctx.firestore(), `apps/${APP}`), { testerCount: 3 }),
+  );
+  const db = asUser(DEV);
+  // Control: the owner CAN edit a profile field, so the refusals below are
+  // about testerCount and nothing else.
+  await assertSucceeds(updateDoc(doc(db, `apps/${APP}`), { appName: "Renamed" }));
+
+  // Zeroing it would let the app exceed its cap; inflating it would lock
+  // testers out; either one desynchronizes it from the capacityHeld claims.
+  for (const testerCount of [0, 2, 4, 999, -1]) {
+    await assertFails(updateDoc(doc(db, `apps/${APP}`), { testerCount }));
+  }
+  await assertFails(
+    setDoc(doc(db, "apps/newApp"), {
+      ownerId: DEV,
+      appName: "New",
+      packageName: "com.example.new",
+      status: "pendingReview",
+      testerCount: 999,
+    }),
+  );
+  // Control: the same create without testerCount is allowed.
+  await assertSucceeds(
+    setDoc(doc(db, "apps/newApp"), {
+      ownerId: DEV,
+      appName: "New",
+      packageName: "com.example.new",
+      status: "pendingReview",
+    }),
+  );
+  // Nor can a tester or an admin from the client.
+  await assertFails(updateDoc(doc(asUser(ALICE), `apps/${APP}`), { testerCount: 0 }));
+  await assertFails(updateDoc(doc(asUser("admin1"), `apps/${APP}`), { testerCount: 0 }));
+});
+
 test("a tester cannot change whose commitment it is, or the cycle, or the window", async () => {
   const db = asUser(ALICE);
   await assertFails(updateDoc(doc(db, ASSIGNMENT(A_C1)), { testerId: BOB }));
@@ -590,4 +637,92 @@ test("an admin cannot write a cancellation directly either", async () => {
   await assertFails(
     setDoc(doc(db, `users/${ALICE}/coinTransactions/cancel_${A_C1}`), { amount: 50 }),
   );
+});
+
+// ---------------------------------------------------------------------------
+// testingLogs — the CYCLE-SCOPED id shape
+//
+// The legacy log tests in firestore.rules.test.js use reward-era ids
+// (`{appId}__{testerId}__{day}`). The commitment engine writes
+// `{appId}__{testerId}__c{n}__{dayKey}` - the id `recordTestingDay` derives -
+// and each such log is 1/14th of a staked commitment. Pinned here so the shape
+// production actually uses is the one proven sealed.
+// ---------------------------------------------------------------------------
+
+const LOG_DAY = "2026-09-24";
+const A_C1_LOG = `testingLogs/${A_C1}__${LOG_DAY}`;
+
+/** A log exactly as the recordTestingDay transaction writes it. */
+function cycleLogDoc(overrides = {}) {
+  return {
+    assignmentId: A_C1,
+    cycle: 1,
+    appId: APP,
+    testerId: ALICE,
+    date: LOG_DAY,
+    timeZone: "Asia/Kolkata",
+    createdAt: serverTimestamp(),
+    ...overrides,
+  };
+}
+
+async function seedCycleLog() {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), A_C1_LOG), cycleLogDoc({ createdAt: new Date() }));
+  });
+}
+
+test("a tester cannot create a cycle-scoped testing log, even a perfect one", async () => {
+  const db = asUser(ALICE);
+  await assertFails(setDoc(doc(db, A_C1_LOG), cycleLogDoc()));
+  // Nor pre-log a future cycle, nor a later day of this one.
+  await assertFails(
+    setDoc(
+      doc(db, `testingLogs/${APP}__${ALICE}__c2__${LOG_DAY}`),
+      cycleLogDoc({ assignmentId: `${APP}__${ALICE}__c2`, cycle: 2 }),
+    ),
+  );
+  await assertFails(
+    setDoc(doc(db, `testingLogs/${A_C1}__2026-09-25`), cycleLogDoc({ date: "2026-09-25" })),
+  );
+});
+
+test("a tester cannot update or delete their own cycle-scoped testing log", async () => {
+  await seedCycleLog();
+  const db = asUser(ALICE);
+
+  // Positive control: the log is theirs and readable, so every denial below
+  // is the write rule speaking, not a missing document or a read failure.
+  await assertSucceeds(getDoc(doc(db, A_C1_LOG)));
+
+  await assertFails(updateDoc(doc(db, A_C1_LOG), { date: "2026-09-25" }));
+  await assertFails(updateDoc(doc(db, A_C1_LOG), { cycle: 2, assignmentId: `${APP}__${ALICE}__c2` }));
+  await assertFails(setDoc(doc(db, A_C1_LOG), cycleLogDoc(), { merge: true }));
+  await assertFails(deleteDoc(doc(db, A_C1_LOG)));
+});
+
+test("an admin cannot write a cycle-scoped testing log from the client", async () => {
+  await seedCycleLog();
+  const db = asUser("admin1");
+  await assertSucceeds(getDoc(doc(db, A_C1_LOG)));
+
+  await assertFails(
+    setDoc(
+      doc(db, `testingLogs/${A_C1}__2026-09-25`),
+      cycleLogDoc({ date: "2026-09-25" }),
+    ),
+  );
+  await assertFails(updateDoc(doc(db, A_C1_LOG), { date: "2026-09-25" }));
+  await assertFails(deleteDoc(doc(db, A_C1_LOG)));
+});
+
+test("nobody else can write a cycle-scoped testing log either", async () => {
+  await seedCycleLog();
+  for (const db of [asUser(BOB), asUser("banned"), asUser("nofields"), asAnon()]) {
+    await assertFails(setDoc(doc(db, `testingLogs/${A_C1}__2026-09-25`), cycleLogDoc()));
+    await assertFails(updateDoc(doc(db, A_C1_LOG), { testerId: BOB }));
+    await assertFails(deleteDoc(doc(db, A_C1_LOG)));
+  }
+  // Another tester cannot even read it.
+  await assertFails(getDoc(doc(asUser(BOB), A_C1_LOG)));
 });

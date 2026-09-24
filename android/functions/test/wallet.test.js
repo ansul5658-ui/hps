@@ -740,3 +740,140 @@ test("a non-admin cannot reconcile a wallet", async () => {
     /Admin privileges are required/,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Ledger folding across the commitment settlements
+//
+// Grants alone never exercise `locked` or `forfeitedTotal`. These drive the
+// REAL `stageWalletEntry` - the only code that writes the cached wallet -
+// through each settlement, then fold the ledger it wrote and require the two
+// to agree field for field. That agreement is what `adminReconcileWallet`
+// checks in production.
+// ---------------------------------------------------------------------------
+
+/** Run `steps` through stageWalletEntry; return the cached wallet and ledger. */
+function stageLifecycle(steps) {
+  const { stageWalletEntry } = require("../wallet");
+  const ledger = [];
+  let cached = null;
+  const tx = {
+    create: (ref, data) => ledger.push({ id: ref.path.split("/").pop(), ...data }),
+    set: (ref, data) => {
+      cached = data;
+    },
+  };
+  const db = { doc: (path) => ({ path }) };
+  let current = emptyWallet();
+  for (const [kind, source, amount, entryId] of steps) {
+    const staged = stageWalletEntry(tx, db, {
+      userId: TESTER,
+      walletRef: db.doc(walletPath(TESTER)),
+      current,
+      entryId,
+      kind,
+      source,
+      amount,
+      reason: "test",
+      actorId: "system",
+      actorKind: "system",
+      idempotencyKey: entryId,
+    });
+    current = staged.wallet;
+  }
+  return { cached, ledger };
+}
+
+const GRANT = ["adjustment", "adminGrant", 50, "grant_k1"];
+const LOCK = ["lock", "commitment", 50, "lock_a1__t1__c1"];
+
+test("ledger folding: forfeiture moves locked into forfeitedTotal, nowhere else", () => {
+  const { cached, ledger } = stageLifecycle([
+    GRANT,
+    LOCK,
+    ["forfeit", "failure", 50, "forfeit_a1__t1__c1"],
+  ]);
+  const { wallet: derived, legacy, unknown } = foldLedger(ledger);
+
+  assert.equal(derived.available, 0, "no partial refund");
+  assert.equal(derived.locked, 0);
+  assert.equal(derived.forfeitedTotal, 50);
+  assert.equal(derived.adjustmentNet, 50);
+  assert.equal(derived.purchasedTotal, 0);
+  assert.equal(derived.ledgerCount, 3);
+  assert.equal(legacy.count + unknown.count, 0);
+  assert.equal(checkInvariants(derived).ok, true);
+
+  const diff = diffWallets(cached, derived);
+  assert.equal(diff.matches, true, JSON.stringify(diff.differences));
+});
+
+test("ledger folding: cancellation is an unlock, returning exactly the stake", () => {
+  const { cached, ledger } = stageLifecycle([
+    GRANT,
+    LOCK,
+    ["unlock", "cancellation", 50, "cancel_a1__t1__c1"],
+  ]);
+  const cancelEntry = ledger.find((e) => e.id === "cancel_a1__t1__c1");
+  assert.equal(cancelEntry.kind, "unlock", "no fifth kind for cancelling");
+  assert.equal(cancelEntry.source, "cancellation");
+
+  const { wallet: derived } = foldLedger(ledger);
+  assert.equal(derived.available, 50, "the same 50 came back");
+  assert.equal(derived.locked, 0);
+  assert.equal(derived.forfeitedTotal, 0, "cancelling forfeits nothing");
+  assert.equal(derived.adjustmentNet, 50, "and creates nothing");
+  assert.equal(checkInvariants(derived).ok, true);
+
+  const diff = diffWallets(cached, derived);
+  assert.equal(diff.matches, true, JSON.stringify(diff.differences));
+});
+
+test("ledger folding: the cached wallet equals the fold across mixed cycles", () => {
+  // Two grants, then one cycle of each settlement, on one wallet.
+  const { cached, ledger } = stageLifecycle([
+    GRANT,
+    ["adjustment", "adminGrant", 100, "grant_k2"],
+    LOCK,
+    ["unlock", "completion", 50, "unlock_a1__t1__c1"],
+    ["lock", "commitment", 50, "lock_a1__t1__c2"],
+    ["forfeit", "failure", 50, "forfeit_a1__t1__c2"],
+    ["lock", "commitment", 50, "lock_a1__t1__c3"],
+    ["unlock", "cancellation", 50, "cancel_a1__t1__c3"],
+    ["lock", "commitment", 50, "lock_a2__t1__c1"],
+  ]);
+  const { wallet: derived } = foldLedger(ledger);
+
+  assert.deepEqual(
+    {
+      available: cached.available,
+      locked: cached.locked,
+      forfeitedTotal: cached.forfeitedTotal,
+    },
+    { available: 50, locked: 50, forfeitedTotal: 50 },
+  );
+  const diff = diffWallets(cached, derived);
+  assert.equal(diff.matches, true, JSON.stringify(diff.differences));
+  assert.equal(derived.lastEntryId, "lock_a2__t1__c1");
+  assert.equal(
+    derived.available + derived.locked + derived.forfeitedTotal,
+    derived.purchasedTotal + derived.adjustmentNet,
+  );
+});
+
+test("ledger folding: the settlement totals do not depend on entry order", () => {
+  const { ledger } = stageLifecycle([
+    GRANT,
+    LOCK,
+    ["forfeit", "failure", 50, "forfeit_a1__t1__c1"],
+    ["adjustment", "adminGrant", 50, "grant_k2"],
+    ["lock", "commitment", 50, "lock_a1__t1__c2"],
+    ["unlock", "cancellation", 50, "cancel_a1__t1__c2"],
+  ]);
+  const forward = foldLedger(ledger).wallet;
+  const reverse = foldLedger([...ledger].reverse()).wallet;
+  for (const f of ["available", "locked", "forfeitedTotal", "purchasedTotal", "adjustmentNet"]) {
+    assert.equal(forward[f], reverse[f], `${f} must not depend on order`);
+  }
+  assert.equal(forward.forfeitedTotal, 50);
+  assert.equal(forward.available, 50);
+});

@@ -80,12 +80,32 @@ async function clearFirestore() {
   if (!res.ok) throw new Error(`Failed to clear emulator: ${res.status}`);
 }
 
+/**
+ * The app's tester count at seed time. Deliberately above 1: releases floor at
+ * zero, so from 1 a double decrement would be invisible. From 5, one release
+ * reads 4 and two read 3.
+ */
+const SEEDED_TESTER_COUNT = 5;
+
 /** A live commitment with `done` qualifying days really logged. */
-async function seedCommitment({ done = 13, status = "inProgress" } = {}) {
+async function seedCommitment({ done = 13, status = "inProgress", outageDayKeys = [] } = {}) {
   const batch = db.batch();
   batch.set(db.doc(`users/${TESTER}`), { uid: TESTER });
   batch.set(db.doc(`users/${DEV}`), { uid: DEV });
-  batch.set(db.doc(`apps/${APP}`), { ownerId: DEV, status: "approved", testerCount: 1 });
+  batch.set(db.doc(`apps/${APP}`), {
+    ownerId: DEV,
+    status: "approved",
+    testerCount: SEEDED_TESTER_COUNT,
+  });
+  for (const dayKey of outageDayKeys) {
+    batch.set(db.doc(`systemHealth/${dayKey}`), {
+      dayKey,
+      degraded: true,
+      scope: "global",
+      appId: null,
+      reason: "test outage",
+    });
+  }
   batch.set(db.doc(assignmentPath()), {
     appId: APP,
     testerId: TESTER,
@@ -106,6 +126,7 @@ async function seedCommitment({ done = 13, status = "inProgress" } = {}) {
     status,
     lockTxId: lockEntryId(C1),
     settlementTxId: null,
+    capacityHeld: true,
     createdAt: Timestamp.fromMillis(CLAIMED_AT),
   });
   batch.set(db.doc(claimPath()), {
@@ -147,25 +168,38 @@ const boundary = (lastKey = W.lastEligibleDayKey) =>
 const atEligibleDay = (n) =>
   startOfLocalDayMillis(addDays(W.firstEligibleDayKey, n - 1), IST) + 12 * 3600 * 1000;
 
+/**
+ * Cancel as of `nowMillis` - by default noon on eligible day 10, well inside
+ * the window. Cancellation is refused once a window has closed short, so a
+ * cancel that should be live must say when it happens; the fixture window is
+ * pinned to March 2026 and the real clock is long past it.
+ */
 const cancel = (actorId = TESTER, opts = {}) =>
   runCancelCommitment(db, {
     assignmentId: C1,
     actorId,
     actorKind: "user",
     isAdmin: false,
+    nowMillis: atEligibleDay(10),
     ...opts,
   });
 
+/** A cancel attempted once the window has already closed short. */
+const lateCancel = (offsetMillis = 0) => cancel(TESTER, { nowMillis: boundary() + offsetMillis });
+
 async function observe() {
-  const [assignment, wallet, claims, ledger] = await Promise.all([
+  const [assignment, wallet, claims, ledger, app] = await Promise.all([
     db.doc(assignmentPath()).get(),
     db.doc(walletPath()).get(),
     db.collection("activeClaims").where("assignmentId", "==", C1).get(),
     db.collection(`users/${TESTER}/coinTransactions`).get(),
+    db.doc(`apps/${APP}`).get(),
   ]);
   return {
     status: assignment.get("status"),
     settlementTxId: assignment.get("settlementTxId"),
+    capacityHeld: assignment.get("capacityHeld"),
+    testerCount: app.get("testerCount"),
     wallet: wallet.data(),
     claimCount: claims.size,
     ledgerIds: ledger.docs.map((d) => d.id).sort(),
@@ -235,6 +269,17 @@ function assertExactlyOneTerminalOutcome(state, label = "") {
   if (landed.length === 1) {
     assert.equal(state.claimCount, 0, `${prefix}a settled commitment left its claim behind`);
   }
+
+  // Capacity: cancellation and forfeiture release the slot exactly once;
+  // completion keeps it; no settlement leaves it alone.
+  const released = landed.includes(cancelEntryId(C1)) || landed.includes(forfeitEntryId(C1));
+  assert.equal(
+    state.testerCount,
+    released ? SEEDED_TESTER_COUNT - 1 : SEEDED_TESTER_COUNT,
+    `${prefix}testerCount ${state.testerCount} - a slot was released ` +
+      `${released ? "other than exactly once" : "without a releasing settlement"}`,
+  );
+  assert.equal(state.capacityHeld, !released, `${prefix}capacityHeld disagrees with the outcome`);
 }
 
 async function settled(promises) {
@@ -448,63 +493,170 @@ test("C: a cancelled commitment can never then complete", async () => {
 // D: cancellation versus forfeiture
 // ---------------------------------------------------------------------------
 
-test("D: a cancellation racing the expiry sweep produces ONE terminal outcome", async () => {
+/**
+ * At an already-expired boundary the race has ONE legitimate winner. The
+ * commitment was lost the moment the window shut short; a cancellation that
+ * arrives in the gap before the sweep - however it interleaves - must be
+ * refused, so the stake is forfeited, never returned.
+ */
+function assertForfeitedNotCancelled(state, label) {
+  assert.equal(state.status, "failed", `${label}: a lost commitment was cancelled`);
+  assert.equal(state.ledgerIds.includes(cancelEntryId(C1)), false, `${label}: cancel entry written`);
+  assert.equal(state.wallet.available, 0, `${label}: the stake came back`);
+  assert.equal(state.wallet.forfeitedTotal, 50);
+  assertExactlyOneTerminalOutcome(state, label);
+}
+
+/** Every cancel must lose - to the closed window, or to a forfeit that landed first. */
+function assertCancelsAllRefused(results, label) {
+  for (const r of results) {
+    assert.equal(r.status, "rejected", `${label}: a late cancellation succeeded`);
+    assert.match(r.reason.message, /closed short|already been settled/, `${label}: ${r.reason.message}`);
+  }
+}
+
+test("D: at the expired boundary a racing cancellation never beats the sweep", async () => {
   await seedCommitment({ done: 3 });
 
-  await settled([
-    cancel(),
+  const [cancelResult, sweepResult] = await Promise.allSettled([
+    lateCancel(),
     runExpirySweep(db, { nowMillis: boundary() }),
   ]);
 
-  const state = await observe();
-  assert.ok(
-    state.status === "cancelled" || state.status === "failed",
-    `expected a terminal status, got ${state.status}`,
-  );
-  assertExactlyOneTerminalOutcome(state, "D");
+  assertCancelsAllRefused([cancelResult], "D");
+  assert.equal(sweepResult.status, "fulfilled");
+  assertForfeitedNotCancelled(await observe(), "D");
 });
 
-test("D: the cancellation/forfeiture race holds across 20 independent rounds", async () => {
+test("D: at the expired boundary cancellation loses in all 20 independent rounds", async () => {
   for (let round = 0; round < 20; round += 1) {
     await clearFirestore();
     await seedCommitment({ done: 3 });
 
-    await settled([
-      cancel(),
+    const [cancelResult, forfeitResult] = await Promise.allSettled([
+      lateCancel(),
       runForfeitCommitment(db, {
         assignmentId: C1, actorId: "sweep", actorKind: "system", nowMillis: boundary(),
       }),
     ]);
 
-    const state = await observe();
-    // Here the two outcomes genuinely differ for the tester: cancelled
-    // returns the stake, forfeited consumes it. Exactly one must happen.
-    const returned = state.wallet.available === 50 && state.wallet.forfeitedTotal === 0;
-    const consumed = state.wallet.available === 0 && state.wallet.forfeitedTotal === 50;
-    assert.ok(
-      returned !== consumed,
-      `round ${round}: stake neither cleanly returned nor cleanly consumed`,
-    );
-    assertExactlyOneTerminalOutcome(state, `D round ${round}`);
+    assertCancelsAllRefused([cancelResult], `D round ${round}`);
+    assert.equal(forfeitResult.status, "fulfilled", `round ${round}: forfeiture must land`);
+    assertForfeitedNotCancelled(await observe(), `D round ${round}`);
   }
 });
 
-test("D: ten-way cancellation-versus-forfeiture pile-up still settles once", async () => {
+test("D: ten-way late-cancellation-versus-forfeiture pile-up settles once, as a forfeit", async () => {
   await seedCommitment({ done: 3 });
 
-  const attempts = [];
+  const cancels = [];
+  const forfeits = [];
   for (let i = 0; i < 5; i += 1) {
-    attempts.push(cancel());
-    attempts.push(
+    cancels.push(lateCancel(i * 60_000));
+    forfeits.push(
       runForfeitCommitment(db, {
         assignmentId: C1, actorId: `sweep${i}`, actorKind: "system", nowMillis: boundary(),
       }),
     );
   }
-  const { fulfilled } = await settled(attempts);
+  const cancelResults = await Promise.allSettled(cancels);
+  const forfeitResults = await Promise.allSettled(forfeits);
 
-  assert.equal(fulfilled.length, 1, "exactly one settlement may succeed");
-  assertExactlyOneTerminalOutcome(await observe(), "D10");
+  assertCancelsAllRefused(cancelResults, "D10");
+  assert.equal(
+    forfeitResults.filter((r) => r.status === "fulfilled").length,
+    1,
+    "exactly one forfeiture may succeed",
+  );
+  assertForfeitedNotCancelled(await observe(), "D10");
+});
+
+// ---------------------------------------------------------------------------
+// F: cancellation after the window has closed short, with no sweep yet
+// ---------------------------------------------------------------------------
+
+test("F: concurrent cancels after expiry are all refused and change nothing", async () => {
+  await seedCommitment({ done: 3 });
+  const before = await observe();
+
+  // Ten attempts spread over the hours between IST midnight and the sweep.
+  const results = await Promise.allSettled(
+    Array.from({ length: 10 }, (_, i) => lateCancel(i * 20 * 60_000)),
+  );
+  for (const r of results) {
+    assert.equal(r.status, "rejected", "a late cancellation succeeded");
+    assert.match(r.reason.message, /closed short/);
+  }
+
+  const state = await observe();
+  assert.deepEqual(state, before, "a refused cancellation must leave no trace");
+  assert.equal(state.status, "inProgress", "still awaiting the sweep");
+  assert.equal(state.wallet.locked, 50);
+  assert.equal(state.claimCount, 1);
+  assert.equal(state.testerCount, SEEDED_TESTER_COUNT, "no slot released by a refusal");
+
+  // The sweep then settles it - as a forfeiture - releasing the slot once.
+  const sweep = await runExpirySweep(db, { nowMillis: boundary() + 3.5 * 3600 * 1000 });
+  assert.equal(sweep.forfeitedCount, 1);
+  assertForfeitedNotCancelled(await observe(), "F-after-sweep");
+});
+
+test("F: late cancels and sweeps racing in a pile-up release capacity exactly once", async () => {
+  await seedCommitment({ done: 3 });
+
+  const attempts = [];
+  for (let i = 0; i < 4; i += 1) {
+    attempts.push(lateCancel(i * 60_000));
+    attempts.push(runExpirySweep(db, { nowMillis: boundary() + i * 60_000 }));
+  }
+  await Promise.allSettled(attempts);
+
+  const state = await observe();
+  assert.equal(state.testerCount, SEEDED_TESTER_COUNT - 1, "released once, not per attempt");
+  assertForfeitedNotCancelled(state, "F-pileup");
+});
+
+test("F: in-window cancels racing each other release capacity exactly once", async () => {
+  await seedCommitment({ done: 5 });
+
+  const { fulfilled } = await settled(Array.from({ length: 10 }, () => cancel()));
+  assert.equal(fulfilled.length, 1);
+
+  const state = await observe();
+  assert.equal(state.testerCount, SEEDED_TESTER_COUNT - 1, "ten racing cancels, one release");
+  assert.equal(state.capacityHeld, false);
+  assertExactlyOneTerminalOutcome(state, "F-cancels");
+});
+
+test("F: a cancel inside an OUTAGE-EXTENDED window succeeds, and the sweep leaves it", async () => {
+  // One declared outage day moves the deadline a day later. Noon on that extra
+  // day is past the raw window - a late cancel without the outage - but still
+  // live with it.
+  await seedCommitment({ done: 3, outageDayKeys: [W.firstEligibleDayKey] });
+  const extraDayNoon = boundary() + 12 * 3600 * 1000;
+
+  const [cancelResult, sweepResult] = await Promise.allSettled([
+    cancel(TESTER, { nowMillis: extraDayNoon }),
+    runExpirySweep(db, { nowMillis: extraDayNoon }),
+  ]);
+  assert.equal(cancelResult.status, "fulfilled", "the extended window is still open");
+  assert.equal(sweepResult.status, "fulfilled");
+  assert.equal(sweepResult.value.forfeitedCount, 0, "an open window is never forfeited");
+
+  const state = await observe();
+  assert.equal(state.status, "cancelled");
+  assert.equal(state.wallet.available, 50);
+  assertExactlyOneTerminalOutcome(state, "F-outage");
+});
+
+test("F: the outage credit is one day - a cancel after it has run out is refused", async () => {
+  await seedCommitment({ done: 3, outageDayKeys: [W.firstEligibleDayKey] });
+  const extendedBoundary = boundary(addDays(W.lastEligibleDayKey, 1));
+
+  await assert.rejects(cancel(TESTER, { nowMillis: extendedBoundary }), /closed short/);
+  const state = await observe();
+  assert.equal(state.status, "inProgress");
+  assert.equal(state.testerCount, SEEDED_TESTER_COUNT);
 });
 
 test("D: a forfeited commitment can never then be cancelled", async () => {

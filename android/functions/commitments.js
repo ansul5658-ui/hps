@@ -80,6 +80,8 @@ const {
   checkUnlockEligible,
   checkForfeitEligible,
   checkCancelEligible,
+  holdsCapacity,
+  releasedTesterCount,
 } = require("./lib/commitments");
 const { deriveWindow, isValidTimeZone } = require("./lib/testingDays");
 const { checkCommitmentExpiry } = require("./lib/expiry");
@@ -106,16 +108,58 @@ function millisOf(value) {
  * Count the tester's qualifying days from the logs themselves.
  *
  * The authority for settlement. `qualifyingDays` on the assignment is a cached
- * display value maintained by a trigger; this recount is what decides whether
- * coins move. Batch 4 replaces the underlying day-recording with a fully
- * server-derived one - this function is the seam that will absorb that change
- * without the settlement path noticing.
+ * display value maintained by `recordTestingDay`; this recount is what
+ * decides whether coins move.
  */
 async function countQualifyingDays(tx, db, assignmentId) {
   const snap = await tx.get(
     db.collection("testingLogs").where("assignmentId", "==", assignmentId).count(),
   );
   return snap.data().count;
+}
+
+// ---------------------------------------------------------------------------
+// Capacity release
+// ---------------------------------------------------------------------------
+
+/**
+ * Read what a terminal cancellation or forfeiture needs to give the tester's
+ * slot back. Returns null when this assignment holds no slot.
+ *
+ * Split from `stageCapacityRelease` because a transaction must do every read
+ * before any write. Reading the app document here is also what makes the
+ * release race-safe against a concurrent claim: both touch the same document,
+ * so Firestore serializes them and neither works from a stale count.
+ */
+async function readCapacityRelease(tx, db, assignmentSnap) {
+  const held = holdsCapacity({
+    capacityHeld: assignmentSnap.get("capacityHeld"),
+    lockTxId: assignmentSnap.get("lockTxId"),
+  });
+  if (!held) return null;
+  const appRef = db.doc(`apps/${assignmentSnap.get("appId")}`);
+  return { appRef, appSnap: await tx.get(appRef) };
+}
+
+/**
+ * Stage the release read by `readCapacityRelease`, and return the fields the
+ * caller must merge into its own terminal assignment update.
+ *
+ * Idempotent by construction: the release lands in the SAME transaction as the
+ * terminal status, and flips `capacityHeld` to false there, so no later or
+ * racing settlement can see the slot as still held.
+ */
+function stageCapacityRelease(tx, release) {
+  if (!release) return {};
+  // An app deleted since the claim has no counter left to correct; the
+  // assignment still stops claiming a slot.
+  if (release.appSnap.exists) {
+    tx.update(release.appRef, {
+      testerCount: releasedTesterCount(release.appSnap.get("testerCount")),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  }
+  return { capacityHeld: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +213,12 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
     const priorIds = priorSnap.docs.map((d) => d.id);
     const openPrior = priorSnap.docs.find(
       (d) => !["completed", "failed", "missed", "cancelled"].includes(d.get("status")),
+    );
+    // A tester whose earlier cycle still holds a slot - in practice, one that
+    // completed - is already counted. A new cycle must not count them twice,
+    // or completing the same app repeatedly would fill it with one person.
+    const alreadyCounted = priorSnap.docs.some((d) =>
+      holdsCapacity({ capacityHeld: d.get("capacityHeld"), lockTxId: d.get("lockTxId") }),
     );
 
     // Reading the wallet locks it, which is what makes two concurrent claims
@@ -246,12 +296,15 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
       // reads it, so nothing here changes when that lands.
       creditedOutageDays: 0,
       qualifyingDays: 0,
-      // Kept in step with qualifyingDays by syncAssignmentProgress; the
+      // Kept in step with qualifyingDays by recordTestingDay; the
       // settlement path recounts from testingLogs regardless.
       daysCompleted: 0,
       status: "ready",
       lockTxId: entryId,
       settlementTxId: null,
+      // Whether this claim took one of the app's tester slots. Cleared by the
+      // settlement that releases it - see `holdsCapacity`.
+      capacityHeld: !alreadyCounted,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -282,10 +335,15 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
     // on that app's document, so simultaneous claims by different testers
     // serialize. That is the price of a correct global cap, and it does not
     // affect claims across different apps.
-    tx.update(appRef, {
-      testerCount: currentTesterCount + 1,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
+    //
+    // Cancellation and forfeiture give the slot back (`releaseCapacity`), so
+    // claim -> cancel -> reclaim cannot ratchet the counter up to the cap.
+    if (!alreadyCounted) {
+      tx.update(appRef, {
+        testerCount: currentTesterCount + 1,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
 
     return {
       claimed: true,
@@ -388,6 +446,10 @@ async function stageUnlockSettlement(tx, db, { assignmentSnap, qualifyingDays, a
   // The claim is what stops a new cycle starting; releasing it is part of the
   // same transaction so a settled commitment can never leave one stranded.
   tx.delete(db.doc(claimPath(appId, testerId)));
+
+  // Capacity is deliberately NOT released: a tester who completed is one the
+  // developer actually has, so they keep their slot (`capacityHeld` stays
+  // true). A later cycle by the same tester sees that and takes no second one.
 
   return { settlementTxId: entryId, amount, testerId, wallet: staged.wallet };
 }
@@ -528,6 +590,7 @@ async function runForfeitCommitment(
       );
     }
 
+    const release = await readCapacityRelease(tx, db, assignmentSnap);
     const { ref: walletRef, wallet } = await readWalletForUpdate(tx, db, testerId);
     const entryId = forfeitEntryId(assignmentId);
 
@@ -559,6 +622,8 @@ async function runForfeitCommitment(
       effectiveLastEligibleDayKey: expiry.effectiveLastEligibleDayKey,
       forfeitedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
+      // A failed tester no longer occupies one of the app's slots.
+      ...stageCapacityRelease(tx, release),
     });
     tx.delete(db.doc(claimPath(appId, testerId)));
 
@@ -636,10 +701,18 @@ async function adminForfeitCommitmentImpl(db, request) {
  * the stored `testerId` against the verified uid from the ID token; the client
  * supplies an assignment id and nothing else, so it cannot cancel a stranger's
  * commitment to move their coins.
+ *
+ * SUSPENDED TESTERS MAY CANCEL - deliberately. Unlike claiming or checking in,
+ * cancelling grants nothing: it returns the tester's own locked coins and ends
+ * their commitment. Refusing it would only strand those coins until the window
+ * closed and then forfeit them, since a suspended tester cannot check in.
+ *
+ * NOT AFTER THE WINDOW HAS CLOSED SHORT - see `checkCancelEligible`. Such a
+ * commitment is refused here and left for the forfeiture path.
  */
 async function runCancelCommitment(
   db,
-  { assignmentId, actorId, actorKind, isAdmin = false },
+  { assignmentId, actorId, actorKind, isAdmin = false, nowMillis = Date.now() },
 ) {
   const assignmentRef = db.doc(assignmentPath(assignmentId));
 
@@ -665,14 +738,42 @@ async function runCancelCommitment(
       );
     }
 
+    // Has the window already closed short? Decided exactly as forfeiture
+    // decides it - recounted logs, the pinned window, declared outages read
+    // INSIDE this transaction, and the server clock - so a cancellation can
+    // never slip in after the commitment has been lost but before the sweep
+    // has settled it. Nothing here depends on the sweep having run.
+    const firstEligibleDayKey = assignmentSnap.get("firstEligibleDayKey");
+    const lastEligibleDayKey = assignmentSnap.get("lastEligibleDayKey");
+    const qualifyingDays = await countQualifyingDays(tx, db, assignmentId);
+    const outageRecords = await readOutageRecords(db, {
+      fromDayKey: firstEligibleDayKey,
+      toDayKey: lastEligibleDayKey,
+      tx,
+    });
+    const expiry = checkCommitmentExpiry({
+      status: assignmentSnap.get("status"),
+      lockTxId,
+      appId,
+      timeZone: assignmentSnap.get("timeZone"),
+      firstEligibleDayKey,
+      lastEligibleDayKey,
+      qualifyingDays,
+      daysRequired: assignmentSnap.get("daysRequired"),
+      outageRecords,
+      nowMillis,
+    });
+
     const eligible = checkCancelEligible({
       status: assignmentSnap.get("status"),
       lockTxId,
+      expiry,
     });
     if (!eligible.ok) {
       throw new HttpsError(eligible.code, eligible.message);
     }
 
+    const release = await readCapacityRelease(tx, db, assignmentSnap);
     const { ref: walletRef, wallet } = await readWalletForUpdate(tx, db, testerId);
     const entryId = cancelEntryId(assignmentId);
 
@@ -698,6 +799,9 @@ async function runCancelCommitment(
       cancelledAt: FieldValue.serverTimestamp(),
       cancelledBy: actorId,
       updatedAt: FieldValue.serverTimestamp(),
+      // The slot goes back to the app, so claim -> cancel -> reclaim cannot
+      // fill it with one tester.
+      ...stageCapacityRelease(tx, release),
     });
     // Same transaction as the coin movement, exactly as completion and
     // forfeiture do: a settled commitment must never leave a claim stranded,
