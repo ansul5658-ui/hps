@@ -86,6 +86,7 @@ const {
   releasedTesterCount,
 } = require("./lib/commitments");
 const { deriveWindow, isValidTimeZone } = require("./lib/testingDays");
+const { appGroupId, checkJoinPrerequisites } = require("./lib/setup");
 const { checkCommitmentExpiry } = require("./lib/expiry");
 const { missRuleApplies, readMissEvidence, removalCheckAtMillis } = require("./lib/misses");
 const { readOutageRecords } = require("./systemHealth");
@@ -235,6 +236,15 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
         .where("testerId", "==", testerId),
     );
     const priorIds = priorSnap.docs.map((d) => d.id);
+
+    // The join prerequisites (Batch 9D), read in THIS transaction so they are
+    // judged on the same snapshot the coins move on: the tester's own apps
+    // (at least one must be ready) and their self-confirmed membership of the
+    // target app's testing group. Nothing here comes from the request.
+    const ownAppsSnap = await tx.get(db.collection("apps").where("ownerId", "==", testerId));
+    const membershipSnap = await tx.get(
+      db.doc(`users/${testerId}/memberships/${appGroupId(appSnap.exists ? appSnap.data() : null)}`),
+    );
     const openPrior = priorSnap.docs.find(
       (d) => !["completed", "failed", "missed", "cancelled"].includes(d.get("status")),
     );
@@ -267,6 +277,20 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
     });
     if (!eligible.ok) {
       throw new HttpsError(eligible.code, eligible.message);
+    }
+    // Checked after the rules above so their existing answers (suspended,
+    // not approved, own app, duplicate, coins, capacity) are unchanged; every
+    // gap is reported together by `getJoinEligibility` for the join screen.
+    const prerequisites = checkJoinPrerequisites({
+      targetApp: appSnap.data(),
+      ownApps: ownAppsSnap.docs.map((d) => d.data()),
+      hasGroupMembership: membershipSnap.exists,
+    });
+    if (!prerequisites.ok) {
+      throw new HttpsError(prerequisites.code, prerequisites.message, {
+        reason: prerequisites.reason,
+        ...(prerequisites.gaps ? { gaps: prerequisites.gaps } : {}),
+      });
     }
     if (!userSnap.exists) {
       throw new HttpsError("failed-precondition", "You need a profile before testing.");

@@ -20,6 +20,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+// Pre-9D fixtures made join-ready the real way; see test/joinReady.js.
+const { readyAppDoc, joinReadyDocs } = require("../test/joinReady");
 
 const admin = require("firebase-admin");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
@@ -95,13 +97,14 @@ async function seed({
   batch.set(db.doc(`users/${ADMIN}`), adminDoc);
   batch.set(db.doc(`users/${DEV}`), { uid: DEV });
   batch.set(db.doc(`users/${TESTER}`), tester);
+  for (const [p, d] of Object.entries(joinReadyDocs(TESTER))) batch.set(db.doc(p), d);
   for (const appId of apps) {
-    batch.set(db.doc(`apps/${appId}`), {
+    batch.set(db.doc(`apps/${appId}`), readyAppDoc(appId, {
       ownerId: DEV,
       status: "approved",
       appName: appId,
       packageName: `com.example.${appId}`,
-    });
+    }));
   }
   if (withWallet) {
     batch.set(db.doc(walletPath()), {
@@ -824,6 +827,7 @@ test("the full lifecycle leaves a complete, auditable ledger", async () => {
 async function fundTester(uid, available = 50) {
   const batch = db.batch();
   batch.set(db.doc(`users/${uid}`), { uid });
+  for (const [p, d] of Object.entries(joinReadyDocs(uid))) batch.set(db.doc(p), d);
   batch.set(db.doc(walletPath(uid)), {
     available,
     locked: 0,

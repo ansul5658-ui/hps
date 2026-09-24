@@ -19,6 +19,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+// Pre-9D fixtures made join-ready the real way; see test/joinReady.js.
+const { readyAppDoc, joinReadyDocs } = require("../test/joinReady");
 
 const admin = require("firebase-admin");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
@@ -83,8 +85,9 @@ async function seedCommitment({ done = 0, status = "inProgress", available = 0, 
   });
   const batch = db.batch();
   batch.set(db.doc(`users/${TESTER}`), { uid: TESTER });
+  for (const [p, d] of Object.entries(joinReadyDocs(TESTER))) batch.set(db.doc(p), d);
   batch.set(db.doc(`users/${DEV}`), { uid: DEV });
-  batch.set(db.doc(`apps/${APP}`), { ownerId: DEV, status: "approved", testerCount: 1 });
+  batch.set(db.doc(`apps/${APP}`), readyAppDoc(APP, { ownerId: DEV, status: "approved", testerCount: 1 }));
   batch.set(db.doc(assignmentPath()), {
     appId: APP,
     testerId: TESTER,
@@ -463,8 +466,9 @@ test("a real claim pins a usable window and the cycle runs to completion", async
   // the window this test exercises is the one the claim actually writes.
   const batch = db.batch();
   batch.set(db.doc(`users/${TESTER}`), { uid: TESTER });
+  for (const [p, d] of Object.entries(joinReadyDocs(TESTER))) batch.set(db.doc(p), d);
   batch.set(db.doc(`users/${DEV}`), { uid: DEV });
-  batch.set(db.doc(`apps/${APP}`), { ownerId: DEV, status: "approved", testerCount: 0 });
+  batch.set(db.doc(`apps/${APP}`), readyAppDoc(APP, { ownerId: DEV, status: "approved", testerCount: 0 }));
   batch.set(db.doc(walletPath()), {
     available: 50,
     locked: 0,

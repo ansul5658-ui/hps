@@ -17,6 +17,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { makeJoinReady } = require("./joinReady");
 
 const assignments = require("../assignments");
 const matching = require("../lib/matching");
@@ -51,7 +52,8 @@ function snapshot(path, data) {
 }
 
 function fakeDb(seed = {}) {
-  const store = new Map(Object.entries(seed));
+  // Pre-9D fixtures: made join-ready the real way; see test/joinReady.js.
+  const store = new Map(Object.entries(makeJoinReady(seed)));
   const writes = [];
 
   function matchingDocs(collection, filters) {

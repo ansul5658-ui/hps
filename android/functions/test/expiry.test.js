@@ -19,6 +19,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { makeJoinReady } = require("./joinReady");
 
 const { checkCommitmentExpiry, couldBeExpired } = require("../lib/expiry");
 const { OUTAGE_SCOPE_GLOBAL, OUTAGE_SCOPE_APP } = require("../lib/outages");
@@ -573,7 +574,8 @@ function snapshot(path, rec) {
 
 function fakeDb(seed = {}) {
   const store = new Map();
-  for (const [path, data] of Object.entries(seed)) store.set(path, { data });
+  // Pre-9D fixtures: made join-ready the real way; see test/joinReady.js.
+  for (const [path, data] of Object.entries(makeJoinReady(seed))) store.set(path, { data });
   const writes = [];
 
   function docsIn(collection) {

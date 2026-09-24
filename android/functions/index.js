@@ -30,6 +30,7 @@ const wallet = require("./wallet");
 const quickTests = require("./quickTests");
 const progress = require("./progress");
 const feedback = require("./feedback");
+const setup = require("./setup");
 
 // Admin-only callables.
 exports.adminSetAppStatus = adminOps.adminSetAppStatus;
@@ -93,6 +94,14 @@ exports.submitTestingFeedback = feedback.submitTestingFeedback;
 exports.getMyTestingFeedback = feedback.getMyTestingFeedback;
 exports.getAppFeedback = feedback.getAppFeedback;
 exports.adminListFeedback = feedback.adminListFeedback;
+
+// Developer testing setup and join eligibility. The developer SELF-CONFIRMS
+// their Play closed test and the AppTesting group - nothing here verifies
+// either externally. Readiness is enforced inside the claim transaction;
+// these report it.
+exports.confirmAppTestingSetup = setup.confirmAppTestingSetup;
+exports.getAppTestingReadiness = setup.getAppTestingReadiness;
+exports.getJoinEligibility = setup.getJoinEligibility;
 
 // Automatic expiry. `evaluateExpiredCommitments` is the ONLY scheduled writer
 // of money in this project, and it deliberately owns none of the arithmetic:

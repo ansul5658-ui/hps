@@ -17,6 +17,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { makeJoinReady } = require("./joinReady");
 const { FieldValue } = require("firebase-admin/firestore");
 
 const {
@@ -430,7 +431,8 @@ function snapshot(path, rec) {
 
 function fakeDb(seed = {}, opts = {}) {
   const store = new Map();
-  for (const [path, data] of Object.entries(seed)) store.set(path, { data, version: 1 });
+  // Pre-9D fixtures: made join-ready the real way; see test/joinReady.js.
+  for (const [path, data] of Object.entries(makeJoinReady(seed))) store.set(path, { data, version: 1 });
   const committed = [];
   const state = { attempts: 0 };
 

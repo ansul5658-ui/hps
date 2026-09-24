@@ -12,6 +12,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+// Pre-9D fixtures made join-ready the real way; see test/joinReady.js.
+const { readyAppDoc, seedJoinReady } = require("../test/joinReady");
 
 const admin = require("firebase-admin");
 const { getFirestore } = require("firebase-admin/firestore");
@@ -65,12 +67,13 @@ async function seedWorld() {
   await db.doc(`users/${ADMIN}`).set({ uid: ADMIN, role: "admin" });
   await db.doc(`users/${DEV}`).set({ uid: DEV });
   await db.doc(`users/${DEV2}`).set({ uid: DEV2 });
-  await db.doc(`apps/${APP}`).set({ ownerId: DEV, status: "approved", testerCount: 0 });
-  await db.doc(`apps/${APP2}`).set({ ownerId: DEV2, status: "approved", testerCount: 0 });
+  await db.doc(`apps/${APP}`).set(readyAppDoc(APP, { ownerId: DEV, status: "approved", testerCount: 0 }));
+  await db.doc(`apps/${APP2}`).set(readyAppDoc(APP2, { ownerId: DEV2, status: "approved", testerCount: 0 }));
 }
 
 async function fund(uid, amount = 50) {
   await db.doc(`users/${uid}`).set({ uid });
+  await seedJoinReady(db, uid);
   await runAdminGrant(db, {
     targetUserId: uid,
     amount,
