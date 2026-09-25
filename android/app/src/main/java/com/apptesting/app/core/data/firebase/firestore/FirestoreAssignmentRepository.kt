@@ -5,6 +5,7 @@ import com.apptesting.app.core.data.CancelAssignmentResult
 import com.apptesting.app.core.data.ClaimAssignmentResult
 import com.apptesting.app.core.data.LogDayResult
 import com.apptesting.app.core.data.firebase.functions.AppFunctions
+import com.apptesting.app.core.data.firebase.functions.CallableException
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.TestAssignment
 import com.apptesting.app.core.util.AppConfig
@@ -90,6 +91,11 @@ internal class FirestoreAssignmentRepository(
                 committedAmount = (result["commitmentAmount"] as? Number)?.toInt() ?: 0,
                 cycle = (result["cycle"] as? Number)?.toInt() ?: 0,
             )
+        } catch (e: CallableException) {
+            // Branch on the server's code and machine-readable reason, not its
+            // wording: the Batch 9D gate sends `reason` + `gaps` so the screen
+            // can say exactly what to fix.
+            claimResultFor(e)
         } catch (e: IllegalStateException) {
             // AppFunctions maps the callable's code to a human message; the
             // server's own wording is the best thing to show here.
@@ -199,5 +205,30 @@ internal class FirestoreAssignmentRepository(
 
     private companion object {
         const val DEFAULT_DAYS = 14
+    }
+}
+
+/**
+ * Map a refused claim onto a result the screen can act on.
+ *
+ * Pure, and unit tested. "Already joined" is information rather than an
+ * error; an insufficient balance keeps its dedicated result; everything the
+ * server refused for a stated reason becomes [ClaimAssignmentResult.Refused]
+ * with that reason intact; anything else is a plain error with the server's
+ * (already human) message.
+ */
+internal fun claimResultFor(e: CallableException): ClaimAssignmentResult {
+    val message = e.message.orEmpty()
+    return when {
+        e.code == "ALREADY_EXISTS" -> ClaimAssignmentResult.AlreadyCommitted
+        e.reason == null && e.code == "FAILED_PRECONDITION" &&
+            message.contains("Testing Coins", ignoreCase = true) ->
+            ClaimAssignmentResult.InsufficientCoins(
+                required = AppConfig.DEFAULT_COMMITMENT_AMOUNT,
+                message = message,
+            )
+        e.code in setOf("FAILED_PRECONDITION", "RESOURCE_EXHAUSTED", "PERMISSION_DENIED", "NOT_FOUND") ->
+            ClaimAssignmentResult.Refused(e.code, e.reason, e.gaps, message)
+        else -> ClaimAssignmentResult.Error(message.ifBlank { "Couldn't commit to this test." })
     }
 }

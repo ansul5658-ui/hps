@@ -30,6 +30,7 @@ import com.apptesting.app.feature.profile.ProfileScreen
 import com.apptesting.app.feature.profile.TestingHistoryScreen
 import com.apptesting.app.feature.profile.TrustScoreScreen
 import com.apptesting.app.feature.testapps.TestAppsScreen
+import com.apptesting.app.feature.testapps.status.CommitmentStatusScreen
 
 private const val TAG = "AUTH_DEBUG"
 
@@ -54,9 +55,16 @@ fun MainScaffold(
                 HomeScreen(
                     onGoToTestApps = { switchTab(innerNav, Routes.TestApps) },
                     onGoToMyApps = { switchTab(innerNav, Routes.MyApps) },
+                    onOpenStatus = { appId -> innerNav.navigate(commitmentStatusRoute(appId)) },
                 )
             }
-            composable(Routes.TestApps) { TestAppsScreen() }
+            composable(Routes.TestApps) {
+                TestAppsScreen(onOpenStatus = { appId -> innerNav.navigate(commitmentStatusRoute(appId)) })
+            }
+            composable(Routes.CommitmentStatus) { backStackEntry ->
+                val appId = backStackEntry.arguments?.getString(Routes.CommitmentStatusArg).orEmpty()
+                CommitmentStatusScreen(appId = appId, onBack = { innerNav.popBackStack() })
+            }
             composable(Routes.MyApps) {
                 MyAppsScreen(
                     onAddApp = { innerNav.navigate(Routes.AddApp) },

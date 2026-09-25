@@ -48,7 +48,14 @@ object Routes {
     // Group details — nav arg placeholder is filled by [groupDetailsRoute].
     const val GroupDetailsArg = "groupId"
     const val GroupDetails = "groups/details/{$GroupDetailsArg}"
+
+    // A tester's commitment status for one app - progress, misses, group, feedback.
+    const val CommitmentStatusArg = "appId"
+    const val CommitmentStatus = "testing/status/{$CommitmentStatusArg}"
 }
+
+/** Build a concrete route to [Routes.CommitmentStatus] for [appId]. */
+fun commitmentStatusRoute(appId: String): String = "testing/status/$appId"
 
 /** Build a concrete route to [Routes.GroupDetails] for [groupId]. */
 fun groupDetailsRoute(groupId: String): String = "groups/details/$groupId"

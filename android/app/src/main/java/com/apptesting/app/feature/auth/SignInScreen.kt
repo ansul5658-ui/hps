@@ -131,7 +131,7 @@ fun SignInScreen(
                         ValueProp(icon = Icons.Rounded.PhoneAndroid,
                             text = "Test real apps from fellow developers")
                         ValueProp(icon = Icons.Rounded.Bolt,
-                            text = "Submit your app — get 12 testers in 14 days")
+                            text = "Submit your app — up to 16 testers, 14 testing days")
                         ValueProp(icon = Icons.Rounded.Groups,
                             text = "Join groups, commit Testing Coins, build trust score")
                     }

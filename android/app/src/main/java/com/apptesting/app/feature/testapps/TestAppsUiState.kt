@@ -3,6 +3,7 @@ package com.apptesting.app.feature.testapps
 import androidx.compose.runtime.Immutable
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.CoinWallet
+import com.apptesting.app.core.model.CommitmentState
 
 sealed interface TestAppsUiState {
     object Loading : TestAppsUiState
@@ -83,6 +84,17 @@ data class TestRow(
      * already returns progress on every check-in.
      */
     val lastEligibleDayKey: String? = null,
+    /**
+     * The server's live state for this cycle, from `getMyCommitmentStatus`;
+     * null for a settled cycle or before the first answer arrives. Preferred
+     * over [status] for the pill, because a commitment past its third miss is
+     * still `inProgress` on the document until the sweep settles it.
+     */
+    val serverState: CommitmentState? = null,
+    /** Server-derived; null for a legacy commitment or before the first answer. */
+    val missedDays: Int? = null,
+    val allowedMisses: Int? = null,
+    val remainingMisses: Int? = null,
 ) {
     val progress: Float
         get() = if (daysRequired <= 0) 0f else daysCompleted.toFloat() / daysRequired

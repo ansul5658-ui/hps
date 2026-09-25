@@ -23,6 +23,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.core.designsystem.component.*
 import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.CommitmentState
+import com.apptesting.app.feature.testapps.TestingCopy
 import com.apptesting.app.core.util.AppConfig
 
 @Composable
@@ -30,12 +32,13 @@ fun HomeScreen(
     viewModel: HomeViewModel = viewModel(),
     onGoToTestApps: () -> Unit = {},
     onGoToMyApps: () -> Unit = {},
+    onOpenStatus: (appId: String) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     when (val s = state) {
         HomeUiState.Loading    -> LoadingState(caption = "Loading your dashboard…")
         is HomeUiState.Error   -> ErrorState(title = "Couldn't load dashboard", message = s.message)
-        is HomeUiState.Content -> HomeContent(s, onGoToTestApps, onGoToMyApps)
+        is HomeUiState.Content -> HomeContent(s, onGoToTestApps, onGoToMyApps, onOpenStatus)
     }
 }
 
@@ -44,6 +47,7 @@ private fun HomeContent(
     state: HomeUiState.Content,
     onGoToTestApps: () -> Unit,
     onGoToMyApps: () -> Unit,
+    onOpenStatus: (String) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -217,6 +221,10 @@ private fun HomeContent(
             }
             items(state.currentAssignments) { row ->
                 AssignmentCard(
+                    onClick = { onOpenStatus(row.appId) },
+                    serverState = row.serverState,
+                    missedDays = row.missedDays,
+                    allowedMisses = row.allowedMisses,
                     appName = row.appName,
                     status = row.status,
                     daysCompleted = row.daysCompleted,
@@ -265,6 +273,10 @@ private fun QuickActionCard(
 
 @Composable
 private fun AssignmentCard(
+    onClick: () -> Unit,
+    serverState: CommitmentState?,
+    missedDays: Int?,
+    allowedMisses: Int?,
     appName: String,
     status: com.apptesting.app.core.model.AssignmentStatus,
     daysCompleted: Int,
@@ -276,6 +288,7 @@ private fun AssignmentCard(
     modifier: Modifier = Modifier,
 ) {
     Card(
+        onClick = onClick,
         modifier = modifier,
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
@@ -298,7 +311,12 @@ private fun AssignmentCard(
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(8.dp))
-                StatusPill(text = assignmentStatusLabel(status), tone = assignmentStatusTone(status))
+                // The server's live verdict wins over the stored status.
+                if (serverState == CommitmentState.AwaitingSettlement) {
+                    StatusPill(text = TestingCopy.statePill(serverState), tone = StatusTone.Danger)
+                } else {
+                    StatusPill(text = assignmentStatusLabel(status), tone = assignmentStatusTone(status))
+                }
             }
             Spacer(Modifier.height(10.dp))
             LinearProgressIndicator(
@@ -322,11 +340,23 @@ private fun AssignmentCard(
                 )
                 if (hasCommitment && commitmentAmount > 0) {
                     Text(
-                        if (lastEligibleDayKey != null) "$commitmentAmount committed (by $lastEligibleDayKey)" else "$commitmentAmount committed",
+                        if (lastEligibleDayKey != null) "$commitmentAmount locked (by $lastEligibleDayKey)" else "$commitmentAmount locked",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+            if (missedDays != null && allowedMisses != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Missed days: $missedDays of $allowedMisses allowed",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (missedDays >= allowedMisses) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
             }
         }
     }

@@ -53,7 +53,7 @@ class GroupOnboardingViewModel(
 
                 if (result.isSuccess) {
                     Log.d(TAG, "[GROUP_ONBOARDING] Membership status recorded successfully for ${user.id}")
-                    _events.emit("Thanks! Your tester-group step is complete.")
+                    _events.emit("Thanks! Your group membership is self-confirmed.")
                     _state.value = GroupOnboardingState.Success
                     onCompleted()
                 } else {

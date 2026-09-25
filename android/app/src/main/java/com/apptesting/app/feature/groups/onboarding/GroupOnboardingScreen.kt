@@ -102,14 +102,14 @@ fun GroupOnboardingScreen(
                 }
                 Spacer(Modifier.height(24.dp))
                 Text(
-                    text = "Join the AppTesting Tester Group",
+                    text = "Join the official AppTesting Google Group",
                     style = MaterialTheme.typography.headlineLarge,
                     color = MaterialTheme.colorScheme.onBackground,
                     textAlign = TextAlign.Center,
                 )
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    text = "Join our official Google Group to participate in community app testing.",
+                    text = "1. Open the group and join it. 2. Come back here. 3. Confirm below. Developers add this group to their closed tests, so joining it is how you get access to the apps you test.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -153,7 +153,7 @@ fun GroupOnboardingScreen(
                 Spacer(Modifier.height(16.dp))
 
                 Text(
-                    text = "Already joined?",
+                    text = "Joined the group?",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -177,7 +177,7 @@ fun GroupOnboardingScreen(
                         )
                     } else {
                         Text(
-                            text = "I've joined the group",
+                            text = "I have completed this",
                             style = MaterialTheme.typography.titleMedium,
                         )
                     }
@@ -186,7 +186,7 @@ fun GroupOnboardingScreen(
                 Spacer(Modifier.height(16.dp))
 
                 Text(
-                    text = "You only need to complete this step once. Membership status recorded.",
+                    text = "Self-confirmed: AppTesting can't check Google Group membership, so this records your own confirmation. You only need to do this once.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,

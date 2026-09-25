@@ -8,19 +8,24 @@ import com.apptesting.app.core.data.AssignmentRepository
 import com.apptesting.app.core.data.CancelAssignmentResult
 import com.apptesting.app.core.data.ClaimAssignmentResult
 import com.apptesting.app.core.data.CoinRepository
+import com.apptesting.app.core.data.GroupRepository
 import com.apptesting.app.core.data.LogDayResult
 import com.apptesting.app.core.data.NotificationRepository
 import com.apptesting.app.core.data.QuickTestRepository
 import com.apptesting.app.core.data.ServiceLocator
 import com.apptesting.app.core.data.StartQuickTestResult
+import com.apptesting.app.core.data.TestingRepository
 import com.apptesting.app.core.data.UserRepository
 import com.apptesting.app.core.model.AppApprovalStatus
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.CoinWallet
+import com.apptesting.app.core.model.CommitmentStatus
+import com.apptesting.app.core.model.JoinEligibility
 import com.apptesting.app.core.model.QuickTestAllowance
 import com.apptesting.app.core.model.TestAssignment
 import com.apptesting.app.core.model.User
+import com.apptesting.app.core.model.isTerminal
 import com.apptesting.app.core.util.AppConfig
 import com.apptesting.app.core.util.TimeProvider
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -32,6 +37,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.launchIn
@@ -47,6 +53,8 @@ class TestAppsViewModel(
     private val quickTests: QuickTestRepository,
     private val notifications: NotificationRepository,
     private val coins: CoinRepository,
+    private val testing: TestingRepository,
+    private val groups: GroupRepository,
     private val time: TimeProvider,
 ) : ViewModel() {
 
@@ -57,6 +65,8 @@ class TestAppsViewModel(
         quickTests = ServiceLocator.quickTestRepository,
         notifications = ServiceLocator.notificationRepository,
         coins = ServiceLocator.coinRepository,
+        testing = ServiceLocator.testingRepository,
+        groups = ServiceLocator.groupRepository,
         time = TimeProvider.Default,
     )
 
@@ -91,6 +101,20 @@ class TestAppsViewModel(
     private val filter = MutableStateFlow(TestFilter.All)
     private val _state = MutableStateFlow<TestAppsUiState>(TestAppsUiState.Loading)
     val state: StateFlow<TestAppsUiState> = _state.asStateFlow()
+
+    /**
+     * The server's live view of the caller's open commitments, by app id.
+     *
+     * Fetched from `getMyCommitmentStatus` every time the assignment listener
+     * fires, so a commitment the server has judged lost (past its third miss,
+     * not yet swept) shows as ending rather than as a stale "testing".
+     */
+    private val serverStates = MutableStateFlow<Map<String, CommitmentStatus>>(emptyMap())
+
+    private val _join = MutableStateFlow<JoinSheetState?>(null)
+
+    /** The join sheet, or null when closed. */
+    val join: StateFlow<JoinSheetState?> = _join.asStateFlow()
 
     private val _events = MutableSharedFlow<TestAppsEvent>()
     val events: SharedFlow<TestAppsEvent> = _events.asSharedFlow()
@@ -171,14 +195,12 @@ class TestAppsViewModel(
         }
     }
 
-
     /**
      * Cancel a live commitment, returning the staked coins.
      *
-     * Same discipline as [onCheckIn] and [onClaimAssignment]: no local balance
-     * change. The returned amount is used only to word the confirmation
-     * message; the wallet chip moves when the wallet listener reports the
-     * server's write.
+     * Same discipline as [onCheckIn]: no local balance change. The returned
+     * amount is used only to word the confirmation message; the wallet chip
+     * moves when the wallet listener reports the server's write.
      *
      * The in-flight guard makes a double tap a single round trip, and the
      * server refuses a second settlement regardless — which is why an
@@ -207,39 +229,130 @@ class TestAppsViewModel(
                 }
             } finally {
                 cancelling.remove(assignmentId)
+                refreshServerStates()
             }
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Joining: preview the server's checklist, then claim
+    // -----------------------------------------------------------------------
+
     /**
-     * Commit Testing Coins to an app and claim a testing assignment.
+     * Open the join sheet for [appId] and load the server's checklist.
+     *
+     * `getJoinEligibility` is a PREVIEW: it lets the sheet show every blocker
+     * at once instead of discovering them one refused claim at a time. The
+     * claim transaction re-decides everything itself, so nothing here can let
+     * a join through that the server would refuse.
+     */
+    fun openJoin(appId: String, appName: String) {
+        _join.value = JoinSheetState.Loading(appId, appName)
+        loadEligibility(appId, appName, message = null)
+    }
+
+    fun dismissJoin() {
+        if ((_join.value as? JoinSheetState.Ready)?.working == true) return
+        _join.value = null
+    }
+
+    fun retryJoinEligibility() {
+        val current = _join.value ?: return
+        _join.value = JoinSheetState.Loading(current.appId, current.appName)
+        loadEligibility(current.appId, current.appName, message = null)
+    }
+
+    private fun loadEligibility(appId: String, appName: String, message: String?) {
+        viewModelScope.launch {
+            testing.joinEligibility(appId).fold(
+                onSuccess = { e ->
+                    // Ignore a stale answer for a sheet the user already closed or changed.
+                    if (_join.value?.appId == appId) {
+                        _join.value = JoinSheetState.Ready(appId, appName, e, message = message)
+                    }
+                },
+                onFailure = { err ->
+                    if (_join.value?.appId == appId) {
+                        _join.value = JoinSheetState.Failed(
+                            appId,
+                            appName,
+                            err.message ?: "Couldn't check whether you can join.",
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    /**
+     * The tester self-confirms joining the official AppTesting group, through
+     * the existing `joinGroup` callable. Not a verification: AppTesting cannot
+     * see the group's members. The sheet says so.
+     */
+    fun confirmGroupJoined() {
+        val ready = _join.value as? JoinSheetState.Ready ?: return
+        if (ready.working) return
+        _join.value = ready.copy(working = true, message = null)
+        viewModelScope.launch {
+            val user = users.currentUser.first()
+            val result = if (user == null) {
+                Result.failure(IllegalStateException("Sign in required."))
+            } else {
+                groups.requestJoin(ready.eligibility.groupId.ifBlank { AppConfig.OFFICIAL_GROUP_ID }, user.id)
+            }
+            loadEligibility(
+                ready.appId,
+                ready.appName,
+                message = result.exceptionOrNull()?.message ?: "Group membership self-confirmed.",
+            )
+        }
+    }
+
+    /**
+     * Commit Testing Coins to the app in the open sheet.
      *
      * Deliberately does NOT adjust any balance locally. The wallet flow this
      * screen already collects is the authority, so the chip and the row update
-     * when the server's write lands — not optimistically. Guessing here would
-     * show coins as committed even when the claim lost a race for the last 50.
+     * when the server's write lands — not optimistically. On success the user
+     * is taken to the commitment's status; on refusal the sheet reloads the
+     * server's checklist and shows the server's own reason.
      */
-    fun onClaimAssignment(appId: String) {
+    fun confirmJoin() {
+        val ready = _join.value as? JoinSheetState.Ready ?: return
         if (!claiming.compareAndSet(false, true)) return
+        _join.value = ready.copy(working = true, message = null)
         viewModelScope.launch {
             try {
-                when (val result = assignments.claimAssignment(appId)) {
-                    is ClaimAssignmentResult.Claimed ->
-                        _events.emit(
-                            TestAppsEvent.Committed(appId, result.committedAmount),
-                        )
-                    ClaimAssignmentResult.AlreadyCommitted ->
-                        _events.emit(
-                            TestAppsEvent.Message("You're already testing this app."),
-                        )
+                when (val result = assignments.claimAssignment(ready.appId)) {
+                    is ClaimAssignmentResult.Claimed -> {
+                        _join.value = null
+                        refreshServerStates()
+                        _events.emit(TestAppsEvent.Committed(ready.appId, result.committedAmount))
+                        _events.emit(TestAppsEvent.OpenStatus(ready.appId))
+                    }
+                    ClaimAssignmentResult.AlreadyCommitted -> {
+                        _join.value = null
+                        _events.emit(TestAppsEvent.Message("You're already testing this app."))
+                        _events.emit(TestAppsEvent.OpenStatus(ready.appId))
+                    }
                     is ClaimAssignmentResult.InsufficientCoins ->
-                        _events.emit(TestAppsEvent.Message(result.message))
+                        loadEligibility(ready.appId, ready.appName, result.message)
+                    is ClaimAssignmentResult.Refused ->
+                        loadEligibility(ready.appId, ready.appName, result.message)
                     is ClaimAssignmentResult.Error ->
-                        _events.emit(TestAppsEvent.Message(result.message))
+                        loadEligibility(ready.appId, ready.appName, result.message)
                 }
             } finally {
                 claiming.set(false)
             }
+        }
+    }
+
+    private fun refreshServerStates() {
+        viewModelScope.launch {
+            testing.openCommitments()
+                .onSuccess { list -> serverStates.value = list.associateBy { it.appId } }
+                .onFailure { e -> Log.w(TAG, "[TEST_APPS] openCommitments failed: ${e.message}") }
         }
     }
 
@@ -258,6 +371,9 @@ class TestAppsViewModel(
                         apps.observeAvailableApps(excludeOwnerId = user.id)
                             .catch { e -> Log.e(TAG, "[TEST_APPS] observeAvailableApps failed", e); emit(emptyList()) },
                         assignments.observeAssignmentsForUser(user.id)
+                            // Any change to the tester's assignments may change
+                            // the server's view of them; re-ask it.
+                            .onEach { refreshServerStates() }
                             .catch { e -> Log.e(TAG, "[TEST_APPS] observeAssignmentsForUser failed", e); emit(emptyList()) },
                         quickTests.observePoolAppIds()
                             .catch { e -> Log.e(TAG, "[TEST_APPS] observePoolAppIds failed", e); emit(emptyList()) },
@@ -268,6 +384,7 @@ class TestAppsViewModel(
                         coins.observeWallet(user.id)
                             .catch { e -> Log.e(TAG, "[TEST_APPS] observeWallet failed", e); emit(CoinWallet.EMPTY) },
                         filter,
+                        serverStates,
                     ) { values ->
                         @Suppress("UNCHECKED_CAST")
                         build(
@@ -279,6 +396,7 @@ class TestAppsViewModel(
                             unreadCount = (values[4] as List<*>).size,
                             wallet = values[5] as CoinWallet,
                             currentFilter = values[6] as TestFilter,
+                            server = values[7] as Map<String, CommitmentStatus>,
                         )
                     }
                 }
@@ -303,6 +421,7 @@ class TestAppsViewModel(
         unreadCount: Int,
         wallet: CoinWallet,
         currentFilter: TestFilter,
+        server: Map<String, CommitmentStatus>,
     ): TestAppsUiState.Content {
         val today = time.todayKey()
         // Quick Test cooldowns still key off a UTC day string, which is
@@ -323,35 +442,38 @@ class TestAppsViewModel(
             limit = AppConfig.QUICK_TEST_MIN_VISIBLE,
         )
 
-        // Section 2 — structured commitments. Unchanged behaviour: testers are
-        // still matched server-side, and this batch deliberately does NOT add
-        // joining or coin locking.
-        val assignmentByAppId = myAssignments.associateBy { it.appId }
+        // Section 2 — testing commitments. One row per app, showing the
+        // CURRENT cycle: a tester who cancelled and rejoined has two
+        // assignments for the app, and the old one must not shadow the live one.
+        val currentByApp = currentAssignmentPerApp(myAssignments)
         val rows = availableApps
             .filter { it.approvalStatus == AppApprovalStatus.Approved }
             .map { app ->
-                val a = assignmentByAppId[app.id]
+                val a = currentByApp[app.id]
+                // The server's live verdict, only for the cycle it describes.
+                val live = server[app.id]?.takeIf { a != null && it.assignmentId == a.id }
                 TestRow(
                     assignmentId = a?.id,
                     appId = app.id,
                     appName = app.name,
                     packageName = app.packageName,
                     developerLabel = shortenOwner(app.ownerUserId),
-                    daysRequired = a?.daysRequired ?: DEFAULT_DAYS,
+                    daysRequired = a?.daysRequired ?: AppConfig.COMMITMENT_DAYS_REQUIRED,
                     daysCompleted = a?.daysCompleted ?: 0,
                     status = a?.status,
                     // Server-authoritative. The server stamps the instant
                     // today's check-in expires, in the commitment's PINNED
                     // zone; this only asks whether that instant has passed.
-                    // Comparing `lastQualifyingDayKey` against a UTC day key
-                    // used to put the client 5.5 hours out of step with the
-                    // server every night for Indian testers.
                     loggedToday = a?.hasLoggedTodayAt(now) == true,
                     // Only a real, locked commitment shows an amount. A
                     // reward-era assignment staked nothing, so it shows 0
                     // rather than implying coins are at risk.
                     committedAmount = a?.displayedCommitmentAmount ?: 0,
-                    lastEligibleDayKey = a?.lastEligibleDayKey,
+                    lastEligibleDayKey = live?.effectiveLastEligibleDayKey ?: a?.lastEligibleDayKey,
+                    serverState = live?.state,
+                    missedDays = live?.missedDays,
+                    allowedMisses = live?.allowedMisses,
+                    remainingMisses = live?.remainingMisses,
                 )
             }
         val visibleRows = when (currentFilter) {
@@ -379,10 +501,44 @@ class TestAppsViewModel(
         "u_me" -> "You"
         else -> "Developer #" + id.takeLast(4)
     }
+}
 
-    private companion object {
-        const val DEFAULT_DAYS = 14
+/**
+ * The assignment that represents each app's CURRENT cycle for this tester.
+ *
+ * Pure, and unit tested. The highest cycle wins, because cycles only grow;
+ * a live assignment beats a settled one only as a tie-break for corrupt data
+ * with equal cycles. The old `associateBy { it.appId }` kept whichever
+ * document the snapshot happened to list last - after cancel-and-rejoin that
+ * could show the cancelled cycle and hide the live one.
+ */
+internal fun currentAssignmentPerApp(assignments: List<TestAssignment>): Map<String, TestAssignment> =
+    assignments.groupBy { it.appId }.mapValues { (_, list) ->
+        list.maxWith(compareBy<TestAssignment>({ it.cycle }, { if (it.status.isTerminal) 0 else 1 }))
     }
+
+/** The join sheet. */
+sealed interface JoinSheetState {
+    val appId: String
+    val appName: String
+
+    data class Loading(override val appId: String, override val appName: String) : JoinSheetState
+
+    data class Ready(
+        override val appId: String,
+        override val appName: String,
+        val eligibility: JoinEligibility,
+        /** A request (join or group confirmation) is in flight; actions are disabled. */
+        val working: Boolean = false,
+        /** The server's latest word - a refusal reason, or a confirmation. */
+        val message: String? = null,
+    ) : JoinSheetState
+
+    data class Failed(
+        override val appId: String,
+        override val appName: String,
+        val message: String,
+    ) : JoinSheetState
 }
 
 sealed interface TestAppsEvent {
@@ -401,4 +557,7 @@ sealed interface TestAppsEvent {
      * committed, never a locally assumed one.
      */
     data class Committed(val appId: String, val amount: Int) : TestAppsEvent
+
+    /** Go to the commitment status screen for [appId]. */
+    data class OpenStatus(val appId: String) : TestAppsEvent
 }

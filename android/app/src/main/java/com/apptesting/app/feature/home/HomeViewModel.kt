@@ -15,6 +15,9 @@ import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.AssignmentStatus
 import com.apptesting.app.core.model.CoinWallet
 import com.apptesting.app.core.model.isTerminal
+import com.apptesting.app.core.model.CommitmentStatus
+import com.apptesting.app.core.data.TestingRepository
+import kotlinx.coroutines.launch
 import com.apptesting.app.core.model.Group
 import com.apptesting.app.core.model.GroupMember
 import com.apptesting.app.core.model.Notification
@@ -41,6 +44,7 @@ class HomeViewModel(
     private val assignments: AssignmentRepository,
     private val notifications: NotificationRepository,
     private val coins: CoinRepository,
+    private val testing: TestingRepository,
 ) : ViewModel() {
 
     constructor() : this(
@@ -50,7 +54,23 @@ class HomeViewModel(
         assignments = ServiceLocator.assignmentRepository,
         notifications = ServiceLocator.notificationRepository,
         coins = ServiceLocator.coinRepository,
+        testing = ServiceLocator.testingRepository,
     )
+
+    /**
+     * The server's live view of the tester's open commitments, by assignment
+     * id - re-fetched whenever the assignments listener fires, so a commitment
+     * past its third miss shows as ending instead of a stale "In Progress".
+     */
+    private val serverStates = MutableStateFlow<Map<String, CommitmentStatus>>(emptyMap())
+
+    private fun refreshServerStates() {
+        viewModelScope.launch {
+            testing.openCommitments()
+                .onSuccess { list -> serverStates.value = list.associateBy { it.assignmentId } }
+                .onFailure { e -> Log.w(TAG, "[HOME] openCommitments failed: ${e.message}") }
+        }
+    }
 
     private val _state = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
@@ -98,7 +118,7 @@ class HomeViewModel(
 
                     val assignmentsFlow = assignments.observeAssignmentsForUser(user.id)
                         .onStart { Log.d(TAG, "[HOME] starting tests flow") }
-                        .onEach { Log.d(TAG, "[HOME] tests emitted size=${it.size}") }
+                        .onEach { Log.d(TAG, "[HOME] tests emitted size=${it.size}"); refreshServerStates() }
                         .catch { e ->
                             Log.e(TAG, "[HOME] tests flow FAILED", e)
                             emit(emptyList())
@@ -131,6 +151,12 @@ class HomeViewModel(
                         assignmentsFlow,
                         notificationsFlow,
                         walletFlow,
+                        serverStates,
+                        // Names of the apps this user is TESTING. Without this
+                        // the card could only name the user's own apps and fell
+                        // back to a guess from the app id ("Seed_ready").
+                        apps.observeAvailableApps(excludeOwnerId = user.id)
+                            .catch { e -> Log.e(TAG, "[HOME] available apps flow FAILED", e); emit(emptyList()) },
                     ) { values ->
                         Log.d(TAG, "[HOME] combined data emitted")
                         Log.d(TAG, "[HOME] mapping HomeUiState")
@@ -143,6 +169,8 @@ class HomeViewModel(
                             myAssignments = values[3] as List<TestAssignment>,
                             unread = values[4] as List<Notification>,
                             wallet = values[5] as CoinWallet,
+                            server = values[6] as Map<String, CommitmentStatus>,
+                            testedApps = values[7] as List<AppSubmission>,
                         )
                         Log.d(TAG, "[HOME] Home state = Content")
                         Log.d(TAG, "[FLOW] Home loading finished")
@@ -167,8 +195,10 @@ class HomeViewModel(
         myAssignments: List<TestAssignment>,
         unread: List<Notification>,
         wallet: CoinWallet,
+        server: Map<String, CommitmentStatus>,
+        testedApps: List<AppSubmission>,
     ): HomeUiState {
-        val appNameById = myApps.associateBy { it.id }.toMutableMap()
+        val appNameById = (testedApps + myApps).associateBy { it.id }.toMutableMap()
         val activeGroup = allGroups.firstOrNull { g -> memberships.any { it.groupId == g.id } }
         val rows = myAssignments
             // "Active" means not yet settled. `isTerminal` rather than a
@@ -194,6 +224,9 @@ class HomeViewModel(
                     lastEligibleDayKey = a.lastEligibleDayKey,
                     nextCheckInAtMillis = a.nextCheckInAtMillis,
                     hasCommitment = a.hasCommitment,
+                    serverState = server[a.id]?.state,
+                    missedDays = server[a.id]?.missedDays,
+                    allowedMisses = server[a.id]?.allowedMisses,
                 )
             }
         return HomeUiState.Content(

@@ -281,7 +281,7 @@ private fun WalletBreakdown(wallet: CoinWallet) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "• Failed or expired commitments forfeit the 50 committed coins.",
+                text = "• A third missed testing day, or a window that closes short, forfeits the 50 committed coins.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -28,9 +28,16 @@ object AppConfig {
      * number is deliberately higher to absorb dropout. Do not present it in
      * the UI as "what Play requires".
      *
-     * Mirrors `REQUIRED_TESTER_COUNT` in functions/lib/constants.js.
+     * Mirrors `REQUIRED_TESTER_COUNT` in functions/lib/constants.js (16 since
+     * Batch 9A). Display only - the server enforces capacity in the claim
+     * transaction, and the join screen shows the server's own `slotsLeft`.
      */
-    const val REQUIRED_TESTER_COUNT = 20
+    const val REQUIRED_TESTER_COUNT = 16
+
+    /** Mirrors the commitment window rules (Batch 9A). Display only. */
+    const val COMMITMENT_WINDOW_DAYS = 16
+    const val COMMITMENT_DAYS_REQUIRED = 14
+    const val COMMITMENT_ALLOWED_MISSES = 2
 
     // ---- Testing Coins ---------------------------------------------------
     // Mirrors the commitment constants in functions/lib/constants.js. Display

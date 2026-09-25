@@ -9,6 +9,7 @@ import com.apptesting.app.core.data.firebase.firestore.FirestoreAssignmentReposi
 import com.apptesting.app.core.data.firebase.firestore.FirestoreCoinRepository
 import com.apptesting.app.core.data.firebase.firestore.FirestoreGroupRepository
 import com.apptesting.app.core.data.firebase.firestore.FirestoreQuickTestRepository
+import com.apptesting.app.core.data.firebase.functions.FunctionsTestingRepository
 
 /**
  * Very small service locator for repositories.
@@ -54,6 +55,7 @@ object ServiceLocator {
     private val mockQuickTests by lazy { MockQuickTestRepository(store) }
     private val mockNotifications by lazy { MockNotificationRepository(store) }
     private val mockAdmin by lazy { MockAdminRepository(store) }
+    private val mockTesting by lazy { MockTestingRepository(store) }
 
     // ---- Public repositories ---------------------------------------------
     val userRepository: UserRepository by lazy {
@@ -82,6 +84,14 @@ object ServiceLocator {
     val notificationRepository: NotificationRepository by lazy {
         // FCM + notifications inbox lands in Step 6.
         mockNotifications
+    }
+    /**
+     * Batch 9B-9D callables: commitment status, member progress, feedback,
+     * developer setup and join eligibility. Read and request only - see
+     * [TestingRepository].
+     */
+    val testingRepository: TestingRepository by lazy {
+        if (isFirebaseEnabled) FunctionsTestingRepository() else mockTesting
     }
     val adminRepository: AdminRepository by lazy {
         if (isFirebaseEnabled) FirestoreAdminRepository() else mockAdmin

@@ -51,6 +51,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -62,6 +64,7 @@ import com.apptesting.app.core.designsystem.component.ResponsivePane
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.model.AppApprovalStatus
+import com.apptesting.app.core.util.AppConfig
 
 @Composable
 fun AppDetailsScreen(
@@ -72,11 +75,18 @@ fun AppDetailsScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val isDeleting by viewModel.isDeleting.collectAsStateWithLifecycle()
     val deleteError by viewModel.deleteError.collectAsStateWithLifecycle()
+    val setup by viewModel.setup.collectAsStateWithLifecycle()
+    val feedback by viewModel.feedback.collectAsStateWithLifecycle()
 
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) { viewModel.messages.collect { snackbarHostState.showSnackbar(it) } }
+    // Re-read feedback whenever this screen comes back into view, including
+    // when a tab switch restores it: new feedback may have arrived meanwhile.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.loadFeedback() }
 
     LaunchedEffect(deleteError) {
         val err = deleteError
@@ -179,14 +189,28 @@ fun AppDetailsScreen(
             when (val s = state) {
                 AppDetailsUiState.Loading -> LoadingState()
                 is AppDetailsUiState.Error -> ErrorState(title = "Couldn't load app", message = s.message)
-                is AppDetailsUiState.Content -> AppDetailsContent(s)
+                is AppDetailsUiState.Content -> AppDetailsContent(
+                    content = s,
+                    setup = setup,
+                    feedback = feedback,
+                    onConfirmSetup = viewModel::confirmSetup,
+                    onRetrySetup = viewModel::loadReadiness,
+                    onRetryFeedback = viewModel::loadFeedback,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun AppDetailsContent(content: AppDetailsUiState.Content) {
+private fun AppDetailsContent(
+    content: AppDetailsUiState.Content,
+    setup: SetupUiState,
+    feedback: AppFeedbackUiState,
+    onConfirmSetup: () -> Unit,
+    onRetrySetup: () -> Unit,
+    onRetryFeedback: () -> Unit,
+) {
     val app = content.app
     val scrollState = rememberScrollState()
 
@@ -255,15 +279,21 @@ private fun AppDetailsContent(content: AppDetailsUiState.Content) {
                 DetailLine(
                     icon = Icons.Rounded.People,
                     label = "Testers",
-                    value = "${app.testerCount} assigned · ${app.completedTesterCount} completed",
+                    value = "${app.testerCount} of ${AppConfig.REQUIRED_TESTER_COUNT} tester slots taken",
                 )
                 DetailLine(
                     icon = Icons.Rounded.Group,
                     label = "Testing Group",
-                    value = content.activeGroup?.name ?: "Not in a group yet",
+                    // No assigned group means the official shared one, which is
+                    // what every app uses unless an admin assigns another.
+                    value = content.activeGroup?.name ?: "Official AppTesting Google Group",
                 )
             }
         }
+
+        TestingSetupCard(state = setup, onConfirm = onConfirmSetup, onRetry = onRetrySetup)
+
+        AppFeedbackCard(state = feedback, onRetry = onRetryFeedback)
 
         // Store Links Card
         Card(

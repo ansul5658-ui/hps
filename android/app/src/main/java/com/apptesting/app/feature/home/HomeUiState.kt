@@ -47,6 +47,14 @@ data class HomeAssignmentRow(
     val lastEligibleDayKey: String? = null,
     val nextCheckInAtMillis: Long? = null,
     val hasCommitment: Boolean = false,
+    /**
+     * The server's live state, misses and allowed misses for this cycle,
+     * from `getMyCommitmentStatus`. Null until the first answer arrives or for
+     * a legacy commitment (no miss limit). Never computed on the device.
+     */
+    val serverState: com.apptesting.app.core.model.CommitmentState? = null,
+    val missedDays: Int? = null,
+    val allowedMisses: Int? = null,
 ) {
     val progress: Float
         get() = if (daysRequired <= 0) 0f else daysCompleted.toFloat() / daysRequired

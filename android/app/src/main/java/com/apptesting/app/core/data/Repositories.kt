@@ -2,6 +2,12 @@ package com.apptesting.app.core.data
 
 import android.net.Uri
 import com.apptesting.app.core.model.AppApprovalStatus
+import com.apptesting.app.core.model.AppFeedbackItem
+import com.apptesting.app.core.model.AppReadiness
+import com.apptesting.app.core.model.CommitmentStatus
+import com.apptesting.app.core.model.JoinEligibility
+import com.apptesting.app.core.model.MemberProgress
+import com.apptesting.app.core.model.MyFeedback
 import com.apptesting.app.core.model.AppSubmission
 import com.apptesting.app.core.model.CoinTransaction
 import com.apptesting.app.core.model.CoinWallet
@@ -162,6 +168,19 @@ sealed interface ClaimAssignmentResult {
     /** A commitment for this app is already live — a no-op, not a failure. */
     object AlreadyCommitted : ClaimAssignmentResult
 
+    /**
+     * The server refused the join for a reason the user can act on: the
+     * Batch 9D gate (`targetNotReady`, `noEligibleOwnApp`, `groupNotJoined`),
+     * capacity, suspension, or their own app. [reason] and [gaps] are the
+     * server's machine-readable codes; [message] is its human wording.
+     */
+    data class Refused(
+        val code: String,
+        val reason: String?,
+        val gaps: List<String>,
+        val message: String,
+    ) : ClaimAssignmentResult
+
     data class Error(val message: String) : ClaimAssignmentResult
 }
 
@@ -312,4 +331,77 @@ interface AdminRepository {
         rules: String? = null,
         memberCap: Int? = null,
     ): Result<Unit>
+}
+
+/**
+ * The Batch 9B-9D read and request callables: commitment status, member
+ * progress, feedback, developer setup and join eligibility.
+ *
+ * Every read here returns SERVER-DERIVED state - miss counts, display states,
+ * readiness, eligibility - so no screen has to compute any of it. The two
+ * writes ([submitFeedback], [confirmAppSetup]) are requests: the server derives
+ * the tester, the app and the cycle, and re-checks everything. Nothing here
+ * writes Firestore, and nothing here can move coins, record days or change a
+ * commitment.
+ *
+ * Failures come back as [Result.failure] carrying a
+ * [com.apptesting.app.core.data.firebase.functions.CallableException] whose
+ * message is already fit to show.
+ */
+interface TestingRepository {
+    /** The caller's latest commitment for [appId], live or settled; null if never joined. */
+    suspend fun commitmentStatus(appId: String): Result<CommitmentStatus?>
+
+    /** Every open commitment of the caller's, with its server-derived state. */
+    suspend fun openCommitments(): Result<List<CommitmentStatus>>
+
+    /** Anonymous progress of [appId]'s current testers. */
+    suspend fun memberProgress(appId: String): Result<MemberProgress>
+
+    /** Advisory join checklist; the claim itself re-decides everything. */
+    suspend fun joinEligibility(appId: String): Result<JoinEligibility>
+
+    suspend fun myFeedback(assignmentId: String): Result<MyFeedback>
+
+    suspend fun submitFeedback(
+        assignmentId: String,
+        rating: Int,
+        comment: String?,
+        foundBug: Boolean,
+    ): SubmitFeedbackResult
+
+    /** Anonymous feedback on the caller's own app. */
+    suspend fun appFeedback(appId: String): Result<List<AppFeedbackItem>>
+
+    /** The owner's setup checklist for [appId]. */
+    suspend fun appReadiness(appId: String): Result<AppReadiness>
+
+    /**
+     * Self-confirm the app's testing setup. There are no flags to pass: calling
+     * this IS the developer confirming both statements, which the screen only
+     * allows once both boxes are ticked.
+     */
+    suspend fun confirmAppSetup(appId: String): ConfirmSetupResult
+}
+
+sealed interface SubmitFeedbackResult {
+    object Submitted : SubmitFeedbackResult
+
+    /** One feedback per cycle; the earlier one stands and cannot be edited. */
+    object AlreadySubmitted : SubmitFeedbackResult
+
+    /** e.g. `noTestingDays` - the server's reason and wording. */
+    data class NotAllowed(val reason: String?, val message: String) : SubmitFeedbackResult
+
+    data class Error(val message: String) : SubmitFeedbackResult
+}
+
+sealed interface ConfirmSetupResult {
+    /** Recorded as self-confirmed. [ready] is whether the app is now open to testers. */
+    data class Confirmed(val ready: Boolean) : ConfirmSetupResult
+
+    /** The links need fixing first; [gaps] are the server's codes. */
+    data class SetupIncomplete(val gaps: List<String>, val message: String) : ConfirmSetupResult
+
+    data class Error(val message: String) : ConfirmSetupResult
 }

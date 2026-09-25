@@ -55,7 +55,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -78,6 +80,8 @@ import com.apptesting.app.core.designsystem.component.ScreenContainer
 import com.apptesting.app.core.designsystem.component.StatusPill
 import com.apptesting.app.core.designsystem.component.StatusTone
 import com.apptesting.app.core.model.AssignmentStatus
+import com.apptesting.app.core.model.CommitmentState
+import com.apptesting.app.core.model.isTerminal
 import com.apptesting.app.core.model.CoinWallet
 import com.apptesting.app.core.util.AppConfig
 
@@ -103,25 +107,35 @@ import com.apptesting.app.core.util.AppConfig
 @Composable
 fun TestAppsScreen(
     viewModel: TestAppsViewModel = viewModel(),
+    onOpenStatus: (appId: String) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val join by viewModel.join.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var searchQuery by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
+        // Snackbars run in child coroutines: `showSnackbar` suspends until the
+        // snackbar is dismissed, and awaiting it here held back the very next
+        // event - the navigation to a new commitment's status by ~4 seconds.
         viewModel.events.collect { event ->
             when (event) {
-                is TestAppsEvent.Message -> snackbar.showSnackbar(event.text)
-                is TestAppsEvent.Committed -> snackbar.showSnackbar(
-                    "Committed ${event.amount} Testing Coins — they come back when you finish.",
-                )
-                is TestAppsEvent.QuickTestStarted -> snackbar.showSnackbar(
-                    if (event.remainingToday > 0) {
-                        "Quick Test started — ${event.remainingToday} left today."
-                    } else {
-                        "Quick Test started — that's your last one today."
-                    },
-                )
+                is TestAppsEvent.Message -> launch { snackbar.showSnackbar(event.text) }
+                is TestAppsEvent.Committed -> launch {
+                    snackbar.showSnackbar(
+                        "${event.amount} Testing Coins locked — they come back when you finish.",
+                    )
+                }
+                is TestAppsEvent.QuickTestStarted -> launch {
+                    snackbar.showSnackbar(
+                        if (event.remainingToday > 0) {
+                            "Quick Test started — ${event.remainingToday} left today."
+                        } else {
+                            "Quick Test started — that's your last one today."
+                        },
+                    )
+                }
+                is TestAppsEvent.OpenStatus -> onOpenStatus(event.appId)
             }
         }
     }
@@ -149,12 +163,23 @@ fun TestAppsScreen(
                     onSearchChange = { searchQuery = it },
                     onFilterChange = viewModel::setFilter,
                     onStartQuickTest = viewModel::onStartQuickTest,
-                    onClaim = viewModel::onClaimAssignment,
+                    onJoin = viewModel::openJoin,
                     onCheckIn = viewModel::onCheckIn,
                     onCancel = viewModel::onCancelAssignment,
+                    onOpenStatus = onOpenStatus,
                 )
             }
         }
+    }
+
+    join?.let { sheet ->
+        JoinSheet(
+            state = sheet,
+            onDismiss = viewModel::dismissJoin,
+            onRetry = viewModel::retryJoinEligibility,
+            onConfirmGroupJoined = viewModel::confirmGroupJoined,
+            onConfirmJoin = viewModel::confirmJoin,
+        )
     }
 }
 
@@ -243,9 +268,10 @@ private fun AppsContent(
     onSearchChange: (String) -> Unit,
     onFilterChange: (TestFilter) -> Unit,
     onStartQuickTest: (String) -> Unit,
-    onClaim: (String) -> Unit,
+    onJoin: (appId: String, appName: String) -> Unit,
     onCheckIn: (String) -> Unit,
     onCancel: (String) -> Unit,
+    onOpenStatus: (String) -> Unit,
 ) {
     val filteredRows = remember(state.rows, searchQuery) {
         if (searchQuery.isBlank()) {
@@ -351,9 +377,10 @@ private fun AppsContent(
                 TestAppCard(
                     row = row,
                     availableCoins = state.wallet.available,
-                    onClaim = { onClaim(row.appId) },
+                    onJoin = { onJoin(row.appId, row.appName) },
                     onCheckIn = { row.assignmentId?.let(onCheckIn) },
                     onCancel = { row.assignmentId?.let(onCancel) },
+                    onOpenStatus = { onOpenStatus(row.appId) },
                 )
             }
         }
@@ -567,9 +594,10 @@ private fun filterLabel(f: TestFilter): String = when (f) {
 private fun TestAppCard(
     row: TestRow,
     availableCoins: Int,
-    onClaim: () -> Unit,
+    onJoin: () -> Unit,
     onCheckIn: () -> Unit,
     onCancel: () -> Unit,
+    onOpenStatus: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -602,7 +630,12 @@ private fun TestAppCard(
                     )
                 }
                 Spacer(Modifier.width(8.dp))
-                val (pillLabel, tone) = when (row.status) {
+                // The server's live verdict wins over the stored status: a
+                // commitment past its third miss is still `inProgress` on the
+                // document until the sweep settles it.
+                val (pillLabel, tone) = if (row.serverState == CommitmentState.AwaitingSettlement) {
+                    TestingCopy.statePill(CommitmentState.AwaitingSettlement) to StatusTone.Danger
+                } else when (row.status) {
                     null -> "Available" to StatusTone.Info
                     AssignmentStatus.Ready -> "Ready" to StatusTone.Info
                     AssignmentStatus.InProgress -> "Testing" to StatusTone.Success
@@ -659,6 +692,20 @@ private fun TestAppCard(
                     trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     color = MaterialTheme.colorScheme.primary,
                 )
+                // Server-derived misses, only while the commitment is live.
+                if (row.missedDays != null && row.allowedMisses != null && !row.status.isSettled()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Missed days: ${row.missedDays} of ${row.allowedMisses} allowed" +
+                            (row.remainingMisses?.let { " · $it left" } ?: ""),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if ((row.remainingMisses ?: 1) == 0) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
             }
 
             Spacer(Modifier.height(20.dp))
@@ -690,21 +737,56 @@ private fun TestAppCard(
                 Spacer(Modifier.height(12.dp))
             }
 
-            ActionRow(
-                status = row.status,
-                loggedToday = row.loggedToday,
-                // Disabling the button early is a courtesy, not the guarantee:
-                // the server re-checks the balance inside the transaction, so a
-                // stale wallet here costs a round trip, never a bad commitment.
-                canCommit = availableCoins >= AppConfig.DEFAULT_COMMITMENT_AMOUNT,
-                commitmentAmount = AppConfig.DEFAULT_COMMITMENT_AMOUNT,
-                onClaim = onClaim,
-                onCheckIn = onCheckIn,
-                onCancel = onCancel,
-            )
+            if (row.serverState == CommitmentState.AwaitingSettlement) {
+                // Nothing to do but understand what happened: check-in and
+                // cancellation would both be refused by the server now.
+                InfoPanel(
+                    text = TestingCopy.stateExplanation(
+                        CommitmentState.AwaitingSettlement,
+                        endReason = if ((row.remainingMisses ?: 1) == 0) "tooManyMisses" else null,
+                        amount = row.committedAmount,
+                    ),
+                    container = MaterialTheme.colorScheme.errorContainer,
+                    content = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            } else {
+                ActionRow(
+                    status = row.status,
+                    loggedToday = row.loggedToday,
+                    // Only shapes the label: the join sheet shows the server's
+                    // real checklist, and the claim re-checks the balance.
+                    canCommit = availableCoins >= AppConfig.DEFAULT_COMMITMENT_AMOUNT,
+                    commitmentAmount = AppConfig.DEFAULT_COMMITMENT_AMOUNT,
+                    onJoin = onJoin,
+                    onCheckIn = onCheckIn,
+                    onCancel = onCancel,
+                )
+            }
+
+            if (row.assignmentId != null) {
+                TextButton(
+                    onClick = onOpenStatus,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) {
+                    Text("View progress & group")
+                }
+            }
+            // A settled cycle can be followed by a new one; the server decides
+            // whether it may (the join sheet shows why not).
+            if (row.status.isSettled()) {
+                OutlinedButton(
+                    onClick = onJoin,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    shape = MaterialTheme.shapes.large,
+                ) {
+                    Text("Join again")
+                }
+            }
         }
     }
 }
+
+private fun AssignmentStatus?.isSettled(): Boolean = this != null && this.isTerminal
 
 @Composable
 private fun DurationBadge(days: Int) {
@@ -751,7 +833,7 @@ private fun ActionRow(
     loggedToday: Boolean,
     canCommit: Boolean,
     commitmentAmount: Int,
-    onClaim: () -> Unit,
+    onJoin: () -> Unit,
     onCheckIn: () -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -761,9 +843,10 @@ private fun ActionRow(
         // free action. The server decides the amount; this label reflects it
         // rather than deciding it.
         null -> {
+            // Always enabled: the sheet it opens shows the server's checklist,
+            // including "not enough coins", instead of a dead button.
             Button(
-                onClick = onClaim,
-                enabled = canCommit,
+                onClick = onJoin,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp),
@@ -777,9 +860,9 @@ private fun ActionRow(
                 Spacer(Modifier.width(8.dp))
                 Text(
                     if (canCommit) {
-                        "Commit $commitmentAmount coins"
+                        "Join · lock $commitmentAmount coins"
                     } else {
-                        "Need $commitmentAmount available coins"
+                        "Join · needs $commitmentAmount coins"
                     },
                     fontWeight = FontWeight.Bold,
                 )
@@ -831,7 +914,7 @@ private fun ActionRow(
                     title = { Text("Cancel this commitment?") },
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Testing will stop for this app.")
+                            Text("This commitment will end and testing will stop for this app.")
                             // Stated plainly and positively. Cancelling is not
                             // a penalty — the stake comes back — and a vague
                             // warning here would push testers into abandoning
@@ -844,7 +927,7 @@ private fun ActionRow(
                                     "No coins are committed to this assignment."
                                 },
                             )
-                            Text("You can't check in on this assignment afterwards.")
+                            Text("Your tester slot is released. You can join again later if a slot is free.")
                         }
                     },
                     confirmButton = {
@@ -893,10 +976,10 @@ private fun ActionRow(
         AssignmentStatus.Failed -> {
             InfoPanel(
                 text = if (commitmentAmount > 0) {
-                    "The testing window closed before 14 days were recorded. " +
-                        "The $commitmentAmount committed coins were forfeited."
+                    "This commitment ended without 14 testing days - after a third missed day, " +
+                        "or when its window closed. The $commitmentAmount locked coins were forfeited."
                 } else {
-                    "The testing window closed before 14 days were recorded."
+                    "This commitment ended without 14 testing days."
                 },
                 container = MaterialTheme.colorScheme.errorContainer,
                 content = MaterialTheme.colorScheme.onErrorContainer,
