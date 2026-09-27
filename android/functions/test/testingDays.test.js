@@ -452,6 +452,11 @@ function fakeDb(seed = {}, opts = {}) {
       __query: { collection: name, filters },
       where: (f, op, v) => collectionRef(name, [...filters, [f, v]]),
       count: () => ({ __count: { collection: name, filters } }),
+      // A plain, non-transactional query: no part in the conflict check.
+      get: async () => {
+        const rows = matchingDocs(name, filters);
+        return { empty: rows.length === 0, size: rows.length, docs: rows.map((r) => snapshot(r.path, r.rec)) };
+      },
     };
   }
 

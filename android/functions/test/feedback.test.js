@@ -136,6 +136,33 @@ test("normalization: NFC, line endings, control and bidi characters, blank-line 
   assert.equal(normalizeComment("<script>alert(1)</script>"), "<script>alert(1)</script>");
 });
 
+// The Android feedback counter mirrors this normalization. The SAME vectors are
+// asserted in app/src/test/.../TestingUiRulesTest.kt, so the counter the tester
+// sees and the limit enforced here cannot drift apart silently.
+test("shared length vectors: characters counted after normalization, as the app counts them", () => {
+  const vectors = [
+    ["hello world", 11],
+    ["नमस्ते दुनिया", 13],
+    ["😀👍🏽", 3],
+    ["Bug: ऐप crashes 😀 on login", 26],
+    ["a\r\nb", 3],
+    ["a\n\n\n\nb", 4],
+    ["a\u0007b‮c⁦d", 4],
+    ["é", 1],
+    [" 　 x \t﻿", 1],
+  ];
+  for (const [input, expected] of vectors) {
+    assert.equal([...normalizeComment(input)].length, expected, JSON.stringify(input));
+  }
+  for (const unit of ["x", "न", "😀"]) {
+    assert.equal(validateSubmission(ok({ comment: unit.repeat(1000) })).ok, true, `1000 × ${unit}`);
+    assert.equal(validateSubmission(ok({ comment: unit.repeat(1001) })).ok, false, `1001 × ${unit}`);
+  }
+  // Raw payload guard, before normalization: 4000 UTF-16 units.
+  assert.equal(validateSubmission(ok({ comment: "a" + "\n".repeat(3998) + "b" })).ok, true);
+  assert.equal(validateSubmission(ok({ comment: "a" + "\n".repeat(4000) + "b" })).ok, false);
+});
+
 // ---------------------------------------------------------------------------
 // Eligibility
 // ---------------------------------------------------------------------------

@@ -43,11 +43,12 @@ internal class AppFunctions(
         }
     }
 
-    private companion object {
+    companion object {
+        /** The callables' region. Also the region the emulator wiring redirects. */
         const val REGION = "asia-south2"
 
         /** Well above normal latency, low enough that a broken call surfaces. */
-        const val CALL_TIMEOUT_MS = 30_000L
+        private const val CALL_TIMEOUT_MS = 30_000L
     }
 }
 

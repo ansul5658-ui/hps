@@ -131,6 +131,7 @@ fun CommitmentStatusScreen(
                 onCheckIn = viewModel::checkIn,
                 onCancel = viewModel::cancel,
                 onSubmitFeedback = viewModel::submitFeedback,
+                onRetryMembers = viewModel::retryMembers,
             )
         }
     }
@@ -143,6 +144,7 @@ private fun Content(
     onCheckIn: () -> Unit,
     onCancel: () -> Unit,
     onSubmitFeedback: (Int, String, Boolean) -> Unit,
+    onRetryMembers: () -> Unit,
 ) {
     LazyColumn(
         modifier = modifier,
@@ -177,13 +179,25 @@ private fun Content(
         }
 
         item { SectionTitle("Testing group") }
-        val members = state.members
-        when {
-            members == null -> item { Muted(state.membersNote ?: "Group progress isn't available.") }
-            members.members.isEmpty() -> item { Muted("No one is testing this app yet.") }
-            else -> {
-                item { Muted("${members.memberCount} of ${members.capacity} tester slots taken. Names are never shown.") }
-                items(members.members, key = { it.label }) { MemberRow(it) }
+        when (val section = state.members) {
+            MembersSection.Loading -> item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Muted("Loading group progress...")
+                }
+            }
+            MembersSection.NotVisible -> item { Muted("Group progress is visible to this app's current testers.") }
+            is MembersSection.Offline -> item { SectionRetry(section.message, onRetryMembers) }
+            is MembersSection.Failed -> item { SectionRetry(section.message, onRetryMembers) }
+            is MembersSection.Visible -> {
+                val members = section.progress
+                if (members.members.isEmpty()) {
+                    item { Muted("No one is testing this app yet.") }
+                } else {
+                    item { Muted("${members.memberCount} of ${members.capacity} tester slots taken. Names are never shown.") }
+                    items(members.members, key = { it.label }) { MemberRow(it) }
+                }
             }
         }
 
@@ -459,12 +473,14 @@ private fun FeedbackForm(busy: Boolean, onSubmit: (Int, String, Boolean) -> Unit
             )
         }
     }
+    // Counted the way the server counts: normalized, in characters (code points).
+    val fits = FeedbackInput.fits(comment)
     OutlinedTextField(
         value = comment,
-        onValueChange = { if (it.length <= FeedbackInput.MAX_COMMENT * 2) comment = it },
+        onValueChange = { if (it.length <= FeedbackInput.MAX_RAW_COMMENT) comment = it },
         label = { Text("Comment (optional)") },
-        supportingText = { Text("${comment.trim().length} / ${FeedbackInput.MAX_COMMENT}") },
-        isError = comment.trim().length > FeedbackInput.MAX_COMMENT,
+        supportingText = { Text("${FeedbackInput.length(comment)} / ${FeedbackInput.MAX_COMMENT}") },
+        isError = !fits,
         minLines = 3,
         modifier = Modifier.fillMaxWidth(),
     )
@@ -481,7 +497,7 @@ private fun FeedbackForm(busy: Boolean, onSubmit: (Int, String, Boolean) -> Unit
     }
     Button(
         onClick = { onSubmit(rating, comment, foundBug) },
-        enabled = rating in 1..5 && !busy && comment.trim().length <= FeedbackInput.MAX_COMMENT,
+        enabled = rating in 1..5 && !busy && fits,
         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
     ) { Text("Send feedback", fontWeight = FontWeight.Bold) }
 }
@@ -524,6 +540,15 @@ private fun SectionLabel(text: String) {
 @Composable
 private fun Muted(text: String) {
     Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** A section that failed to load, with its own retry. */
+@Composable
+private fun SectionRetry(message: String, onRetry: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+        TextButton(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
+    }
 }
 
 /**

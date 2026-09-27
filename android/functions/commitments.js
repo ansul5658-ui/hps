@@ -86,7 +86,7 @@ const {
   releasedTesterCount,
 } = require("./lib/commitments");
 const { deriveWindow, isValidTimeZone } = require("./lib/testingDays");
-const { appGroupId, checkJoinPrerequisites } = require("./lib/setup");
+const { appGroupId, checkAppReadiness, checkJoinPrerequisites } = require("./lib/setup");
 const { checkCommitmentExpiry } = require("./lib/expiry");
 const { missRuleApplies, readMissEvidence, removalCheckAtMillis } = require("./lib/misses");
 const { readOutageRecords } = require("./systemHealth");
@@ -191,6 +191,36 @@ function stageCapacityRelease(tx, release) {
 // Claim
 // ---------------------------------------------------------------------------
 
+/** Only one ready own app is needed; a few spares cover one going stale mid-claim. */
+const OWN_APP_CANDIDATE_LIMIT = 5;
+
+/**
+ * References to every assignment [testerId] has for [appId], located by a
+ * plain (non-transactional) query. The claim transaction point-reads each one;
+ * see the "locate" note in `runClaimCommitment`.
+ */
+async function priorAssignmentRefs(db, appId, testerId) {
+  const snap = await db
+    .collection("testingAssignments")
+    .where("appId", "==", appId)
+    .where("testerId", "==", testerId)
+    .get();
+  return snap.docs.map((d) => d.ref);
+}
+
+/**
+ * References to the tester's own apps that were ready when last read, located
+ * by a plain (non-transactional) query. A hint only: the claim transaction
+ * point-reads each one and re-judges ownership and readiness on its snapshot.
+ */
+async function readyOwnAppCandidateRefs(db, testerId) {
+  const snap = await db.collection("apps").where("ownerId", "==", testerId).get();
+  return snap.docs
+    .filter((d) => checkAppReadiness(d.data()).ready)
+    .slice(0, OWN_APP_CANDIDATE_LIMIT)
+    .map((d) => d.ref);
+}
+
 /**
  * Claim a testing assignment and lock the commitment, atomically.
  *
@@ -219,6 +249,25 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
   const claimRef = db.doc(claimPath(appId, testerId));
 
   return db.runTransaction(async (tx) => {
+    // ---- locate: plain queries, NOT transactional reads ---------------
+    // The transaction reads documents only by id. Queries inside it were the
+    // cause of a real failure under contention: when claims race for one app,
+    // the emulator killed a losing transaction mid-query with "Transaction is
+    // invalid or closed" (INVALID_ARGUMENT), which the SDK does not retry, so
+    // the loser got a raw backend error instead of retrying and hearing "full".
+    //
+    // These queries only FIND ids. Everything decided below comes from point
+    // reads inside the transaction, and they re-run on every retry attempt, so
+    // they are never older than the attempt that uses them. What they could
+    // miss is covered elsewhere: assignments are created only by this claim,
+    // alongside the active-claim document read below (so a racing claim for
+    // the same tester and app collides on that), and a stale own-app list can
+    // only cause a refusal, never an admission.
+    const [priorRefs, ownAppCandidateRefs] = await Promise.all([
+      priorAssignmentRefs(db, appId, testerId),
+      readyOwnAppCandidateRefs(db, testerId),
+    ]);
+
     // ---- reads: all of them, before any write ------------------------
     const [appSnap, userSnap, claimSnap] = await Promise.all([
       tx.get(appRef),
@@ -228,30 +277,31 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
 
     // Every assignment this tester already has for this app, so the new cycle
     // is strictly higher than any existing one and an unfinished assignment
-    // blocks a second claim even if its claim document went missing.
-    const priorSnap = await tx.get(
-      db
-        .collection("testingAssignments")
-        .where("appId", "==", appId)
-        .where("testerId", "==", testerId),
-    );
-    const priorIds = priorSnap.docs.map((d) => d.id);
+    // blocks a second claim even if its claim document went missing. Point
+    // reads; a document deleted since it was located simply drops out.
+    const priorDocs = (await Promise.all(priorRefs.map((ref) => tx.get(ref))))
+      .filter((s) => s.exists && s.get("appId") === appId && s.get("testerId") === testerId);
+    const priorIds = priorDocs.map((d) => d.id);
 
     // The join prerequisites (Batch 9D), read in THIS transaction so they are
     // judged on the same snapshot the coins move on: the tester's own apps
     // (at least one must be ready) and their self-confirmed membership of the
     // target app's testing group. Nothing here comes from the request.
-    const ownAppsSnap = await tx.get(db.collection("apps").where("ownerId", "==", testerId));
+    // Ownership is re-checked because the candidates were located by query.
+    const ownAppSnaps = await Promise.all(ownAppCandidateRefs.map((ref) => tx.get(ref)));
+    const ownApps = ownAppSnaps
+      .filter((s) => s.exists && s.get("ownerId") === testerId)
+      .map((s) => s.data());
     const membershipSnap = await tx.get(
       db.doc(`users/${testerId}/memberships/${appGroupId(appSnap.exists ? appSnap.data() : null)}`),
     );
-    const openPrior = priorSnap.docs.find(
+    const openPrior = priorDocs.find(
       (d) => !["completed", "failed", "missed", "cancelled"].includes(d.get("status")),
     );
     // A tester whose earlier cycle still holds a slot - in practice, one that
     // completed - is already counted. A new cycle must not count them twice,
     // or completing the same app repeatedly would fill it with one person.
-    const alreadyCounted = priorSnap.docs.some((d) =>
+    const alreadyCounted = priorDocs.some((d) =>
       holdsCapacity({ capacityHeld: d.get("capacityHeld"), lockTxId: d.get("lockTxId") }),
     );
 
@@ -283,7 +333,7 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
     // gap is reported together by `getJoinEligibility` for the join screen.
     const prerequisites = checkJoinPrerequisites({
       targetApp: appSnap.data(),
-      ownApps: ownAppsSnap.docs.map((d) => d.data()),
+      ownApps,
       hasGroupMembership: membershipSnap.exists,
     });
     if (!prerequisites.ok) {

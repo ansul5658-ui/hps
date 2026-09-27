@@ -22,7 +22,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { makeJoinReady } = require("./joinReady");
+const { makeJoinReady, ownAppId } = require("./joinReady");
 const { FieldValue } = require("firebase-admin/firestore");
 
 const {
@@ -133,6 +133,16 @@ function fakeDb(seed = {}, opts = {}) {
       },
       count() {
         return { __count: { collection: name, filters } };
+      },
+      // A plain, non-transactional query: it reads the committed store and,
+      // unlike `tx.get(query)`, takes no part in the conflict check.
+      async get() {
+        const rows = matching(name, filters);
+        return {
+          empty: rows.length === 0,
+          size: rows.length,
+          docs: rows.map((r) => snapshot(r.path, r.rec)),
+        };
       },
     };
   }
@@ -621,6 +631,106 @@ test("a finished cycle does not block the next one, which gets a new id", async 
   assert.equal(outcome.assignmentId, cycleAssignmentId(APP, TESTER, 2));
   // The first cycle's history is untouched.
   assert.equal(db.__read(C1_PATH).status, "completed");
+  assertWalletSound(db);
+});
+
+// ---------------------------------------------------------------------------
+// The claim transaction reads by id only (Batch 9F)
+//
+// Queries inside the claim transaction made a losing racer fail with the
+// emulator's non-retryable "Transaction is invalid or closed". Candidates are
+// now LOCATED by plain queries and every deciding read is a point read in the
+// transaction. These pin that shape and prove the point reads still guard.
+// ---------------------------------------------------------------------------
+
+/** Wrap a fake db so any query or count read inside a transaction throws. */
+function forbidTransactionalQueries(db) {
+  const run = db.runTransaction.bind(db);
+  db.runTransaction = (fn) =>
+    run((tx) =>
+      fn({
+        ...tx,
+        get: (target) => {
+          if (target && (target.__query || target.__count)) {
+            throw new Error("query read inside the claim transaction");
+          }
+          return tx.get(target);
+        },
+      }),
+    );
+  return db;
+}
+
+test("the claim transaction performs no query reads - point reads only", async () => {
+  const db = forbidTransactionalQueries(
+    fakeDb(
+      world({
+        available: 50,
+        extra: {
+          [C1_PATH]: {
+            appId: APP,
+            testerId: TESTER,
+            status: "completed",
+            lockTxId: lockEntryId(C1),
+            settlementTxId: unlockEntryId(C1),
+          },
+        },
+      }),
+    ),
+  );
+  const outcome = await claim(db);
+  // The prior cycle was still found (so the new cycle is 2, not 1).
+  assert.equal(outcome.cycle, 2);
+  assertWalletSound(db);
+});
+
+test("an own app that stops being ready mid-claim refuses the join - fail closed", async () => {
+  const ownApp = `apps/${ownAppId(TESTER)}`;
+  const db = fakeDb(world({ available: 50 }), {
+    beforeCommit: ({ attempt, bump }) => {
+      // The owner's app is rejected between this claim's reads and its commit.
+      if (attempt === 1) bump(ownApp, { status: "rejected" });
+    },
+  });
+  await assert.rejects(claim(db), (err) => {
+    assert.equal(err.code, "failed-precondition");
+    assert.equal(err.details.reason, "noEligibleOwnApp");
+    return true;
+  });
+  // The point read conflicted and the retry re-judged it: nothing was written.
+  assert.equal(db.__has(CLAIM_PATH), false);
+  assert.equal(db.__read(WALLET_PATH).locked, 0);
+  assert.equal(db.__read(WALLET_PATH).available, 50);
+});
+
+test("a prior cycle releasing its slot mid-claim is re-read, so the count stays exact", async () => {
+  const db = fakeDb(
+    world({
+      available: 50,
+      extra: {
+        [C1_PATH]: {
+          appId: APP,
+          testerId: TESTER,
+          status: "completed",
+          lockTxId: lockEntryId(C1),
+          settlementTxId: unlockEntryId(C1),
+          capacityHeld: true,
+        },
+      },
+    }),
+    {
+      beforeCommit: ({ attempt, bump }) => {
+        // On the first attempt cycle 1 still holds a slot, so the claim would
+        // not count the tester again. The slot is released before it commits.
+        if (attempt === 1) bump(C1_PATH, { capacityHeld: false });
+      },
+    },
+  );
+  const outcome = await claim(db);
+  assert.equal(outcome.cycle, 2);
+  // The retry saw the release: the new cycle takes a slot and the app counts it.
+  assert.equal(db.__read(`testingAssignments/${outcome.assignmentId}`).capacityHeld, true);
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 1);
   assertWalletSound(db);
 });
 

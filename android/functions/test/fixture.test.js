@@ -17,11 +17,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-// The fixture refuses to load outside the emulator - deliberately, so it can
+// The fixture refuses to load outside the emulators - deliberately, so it can
 // never be pointed at production. Satisfy that guard for the import; nothing
 // here connects to anything.
 process.env.FIRESTORE_EMULATOR_HOST =
   process.env.FIRESTORE_EMULATOR_HOST || "127.0.0.1:8080";
+process.env.FIREBASE_AUTH_EMULATOR_HOST =
+  process.env.FIREBASE_AUTH_EMULATOR_HOST || "127.0.0.1:9099";
+
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const { advanceFields } = require("../test-emulator/seed-device-test");
 const {
@@ -138,4 +143,54 @@ test("the derivation holds in a zone west of UTC too", () => {
   );
   assert.equal(f.logDayKeys.includes(TODAY), false);
   assert.equal(f.lastQualifyingDayKey, addDays(TODAY, -1));
+});
+
+// ---------------------------------------------------------------------------
+// The fixture refuses to load unless BOTH emulator hosts are set (Batch 9F)
+//
+// It lists Auth users to find the phone's. With only the Firestore host set,
+// firebase-admin would send that Auth call to the real project and read
+// production accounts. Loaded in a child process with a controlled
+// environment, so this file's own settings cannot mask a regression; the guard
+// throws before firebase-admin is initialized, so nothing connects anywhere.
+// ---------------------------------------------------------------------------
+
+const SEED = path.join(__dirname, "..", "test-emulator", "seed-device-test.js");
+
+function loadSeedWith(env) {
+  const clean = { ...process.env };
+  delete clean.FIRESTORE_EMULATOR_HOST;
+  delete clean.FIREBASE_AUTH_EMULATOR_HOST;
+  return spawnSync(process.execPath, ["-e", `require(${JSON.stringify(SEED)})`], {
+    env: { ...clean, ...env },
+    encoding: "utf8",
+    timeout: 30000,
+  });
+}
+
+test("the seed fixture refuses to load without the Auth emulator host", () => {
+  const r = loadSeedWith({ FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080" });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /FIREBASE_AUTH_EMULATOR_HOST not set/);
+});
+
+test("the seed fixture refuses to load without the Firestore emulator host", () => {
+  const r = loadSeedWith({ FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099" });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /FIRESTORE_EMULATOR_HOST not set/);
+});
+
+test("the seed fixture refuses to load with neither emulator host", () => {
+  const r = loadSeedWith({});
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /FIRESTORE_EMULATOR_HOST and FIREBASE_AUTH_EMULATOR_HOST not set/);
+});
+
+test("the seed fixture loads (without running) when both emulator hosts are set", () => {
+  // Requiring is not running: main() only starts when executed directly.
+  const r = loadSeedWith({
+    FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080",
+    FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099",
+  });
+  assert.equal(r.status, 0, r.stderr);
 });

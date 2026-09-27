@@ -172,6 +172,44 @@ test("3: concurrent claims for the 16th slot admit exactly one, across 5 rounds"
   }
 });
 
+test("3b: eight racers for the last slot - every loser hears 'full' and keeps every coin", async () => {
+  // Batch 9F. A losing racer used to fail, now and then, with the emulator's
+  // "Transaction is invalid or closed" from a query inside the claim
+  // transaction. The claim now reads by id only, so a loser must retry into the
+  // real answer. Eight racers per round push contention well past test 3's four.
+  for (let round = 1; round <= 5; round += 1) {
+    await clearFirestore();
+    await seedWorld({ testerCount: REQUIRED_TESTER_COUNT - 1 });
+    const racers = Array.from({ length: 8 }, (_, i) => `x${i + 1}`);
+    for (const r of racers) await fund(r);
+
+    const results = await Promise.allSettled(racers.map((r) => claim(r)));
+    const winners = racers.filter((_, i) => results[i].status === "fulfilled");
+    assert.equal(winners.length, 1, `round ${round}: exactly one winner`);
+    results.forEach((r, i) => {
+      if (r.status === "rejected") {
+        assert.match(r.reason.message, /all the testers it needs/, `round ${round}: ${racers[i]} got a business answer`);
+      }
+    });
+    assert.equal(
+      (await db.doc(`apps/${APP}`).get()).get("testerCount"),
+      REQUIRED_TESTER_COUNT,
+      `round ${round}: the cap holds exactly`,
+    );
+
+    for (const r of racers) {
+      const w = (await db.doc(`users/${r}/wallet/balance`).get()).data();
+      const won = r === winners[0];
+      assert.equal(w.available, won ? 0 : 50, `round ${round}: ${r} available`);
+      assert.equal(w.locked, won ? 50 : 0, `round ${round}: ${r} locked`);
+      assert.equal(checkInvariants(w).ok, true, `round ${round}: ${r} wallet invariant`);
+      // A loser leaves no lock entry and no active claim behind.
+      const locks = await db.collection(`users/${r}/coinTransactions`).where("kind", "==", "lock").get();
+      assert.equal(locks.size, won ? 1 : 0, `round ${round}: ${r} lock entries`);
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 4-7. Settlement outcomes and what they do to the slot
 // ---------------------------------------------------------------------------

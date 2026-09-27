@@ -1,8 +1,11 @@
 /**
  * Seeds the local Firebase Emulator Suite for the physical-device smoke test.
  *
- * EMULATOR ONLY. It refuses to run unless FIRESTORE_EMULATOR_HOST is set, so
- * it cannot be pointed at production by accident.
+ * EMULATOR ONLY. It refuses to run - or even to load - unless BOTH
+ * FIRESTORE_EMULATOR_HOST and FIREBASE_AUTH_EMULATOR_HOST are set, so it
+ * cannot be pointed at production by accident. The Auth host matters as much
+ * as the Firestore one: the script lists Auth users to find the phone's, and
+ * without the Auth emulator that would read PRODUCTION accounts.
  *
  * It deliberately seeds only the PRECONDITIONS for a commitment — a funded
  * wallet and an approved app owned by someone else. It does NOT create the
@@ -25,8 +28,13 @@
 
 const admin = require("firebase-admin");
 
-if (!process.env.FIRESTORE_EMULATOR_HOST) {
-  throw new Error("FIRESTORE_EMULATOR_HOST is not set — refusing to run outside the emulator.");
+// Both, checked before firebase-admin is initialized: firebase-admin sends each
+// service to its emulator only when that service's own variable is set, so one
+// without the other would quietly reach the real project.
+const REQUIRED_EMULATOR_HOSTS = ["FIRESTORE_EMULATOR_HOST", "FIREBASE_AUTH_EMULATOR_HOST"];
+const missingHosts = REQUIRED_EMULATOR_HOSTS.filter((name) => !process.env[name]);
+if (missingHosts.length > 0) {
+  throw new Error(`${missingHosts.join(" and ")} not set — refusing to run outside the emulators.`);
 }
 
 const PROJECT_ID = process.env.GCLOUD_PROJECT || "apptesting-a64aa";

@@ -2,6 +2,7 @@ package com.apptesting.app.core.data.firebase
 
 import android.util.Log
 import com.apptesting.app.BuildConfig
+import com.apptesting.app.core.data.firebase.functions.AppFunctions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.functions.FirebaseFunctions
@@ -78,8 +79,10 @@ internal object FirebaseEmulator {
     }
 
     /**
-     * Must match the region the callables are created with, so the emulator
-     * URL path lines up with what the Functions emulator serves.
+     * The region the callables are created with - the SAME constant, not a
+     * copy. [FirebaseFunctions.getInstance] returns one instance per region, so
+     * wiring a different region than the one [AppFunctions] calls would leave
+     * the callables on real Firebase while Auth and Firestore used emulators.
      */
-    const val FUNCTIONS_REGION = "asia-south2"
+    const val FUNCTIONS_REGION = AppFunctions.REGION
 }
