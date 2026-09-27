@@ -203,6 +203,32 @@ async function findExpiryCandidates(db, { nowMillis, limit = EXPIRY_SWEEP_LIMIT 
 }
 
 /**
+ * Refusals the sweep records as skips: the HttpsError spellings, and the raw
+ * gRPC numbers Firestore uses for the same three (9, 6, 5).
+ */
+const SKIP_CODES = new Set(["failed-precondition", "already-exists", "not-found", 9, 6, 5]);
+
+/**
+ * Everything worth logging about a settlement the sweep could not complete:
+ * the raw gRPC status (a number and its `details` text) or the HttpsError
+ * code and HTTP status, plus the stack. The sweep's summary keeps only
+ * code and message; without this the log of a failure has no trace at all
+ * (Batch 9G). Logging only - never throws, never affects the outcome.
+ */
+function describeSettlementError(assignmentId, err) {
+  if (!err || typeof err !== "object") return { assignmentId, message: String(err) };
+  const status = err.httpErrorCode && err.httpErrorCode.status;
+  return {
+    assignmentId,
+    message: err.message,
+    code: err.code === undefined ? null : err.code,
+    status: status === undefined ? null : status,
+    details: err.details === undefined ? null : err.details,
+    stack: typeof err.stack === "string" ? err.stack : null,
+  };
+}
+
+/**
  * Evaluate and settle every expired commitment. The sweep.
  *
  * Each assignment is settled in its OWN transaction rather than one batch, so
@@ -228,6 +254,9 @@ async function runExpirySweep(
   const forfeited = [];
   const skipped = [];
   const failed = [];
+  // Log-only detail for each `failed` entry. Kept apart so the returned
+  // summary - which callers and tests compare - is unchanged.
+  const failureDiagnostics = [];
 
   for (const assignmentId of candidates) {
     try {
@@ -253,10 +282,15 @@ async function runExpirySweep(
       // errors, so they are recorded and the sweep moves on.
       const code = err && err.code ? err.code : "internal";
       const entry = { assignmentId, code, message: err && err.message };
-      if (code === "failed-precondition" || code === "already-exists" || code === "not-found") {
+      // The same three refusals can also arrive as raw gRPC numbers from
+      // Firestore itself - chiefly 6 (ALREADY_EXISTS) when a racing sweep's
+      // commit collides on the deterministic ledger id: the idempotency
+      // backstop doing its job, not a settlement that failed (Batch 9G).
+      if (SKIP_CODES.has(code)) {
         skipped.push(entry);
       } else {
         failed.push(entry);
+        failureDiagnostics.push(describeSettlementError(assignmentId, err));
       }
     }
   }
@@ -278,7 +312,10 @@ async function runExpirySweep(
       `failed ${summary.failedCount}`,
   );
   if (failed.length > 0) {
-    logger.error(`expiry sweep could not settle ${failed.length} assignment(s)`, { failed });
+    logger.error(`expiry sweep could not settle ${failed.length} assignment(s)`, {
+      failed,
+      diagnostics: failureDiagnostics,
+    });
   }
 
   return summary;

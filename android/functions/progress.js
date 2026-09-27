@@ -49,7 +49,7 @@ const {
   shapeMemberRow,
   canReadMemberProgress,
 } = require("./lib/progress");
-const { readOutageRecords } = require("./systemHealth");
+const { readOutageRecordsInTx } = require("./systemHealth");
 const { requireAuth, requireDocId, loadUser } = require("./lib/guards");
 
 function millisOf(value) {
@@ -76,10 +76,9 @@ async function readCommitmentStatus(tx, db, snap, nowMillis) {
 
   let verdict = null;
   if (!isTerminalStatus(data.status)) {
-    const outageRecords = await readOutageRecords(db, {
+    const outageRecords = await readOutageRecordsInTx(tx, db, {
       fromDayKey: data.firstEligibleDayKey,
       toDayKey: data.lastEligibleDayKey,
-      tx,
     });
     const loggedDayKeys = await readMissEvidence({
       assignmentId: snap.id,

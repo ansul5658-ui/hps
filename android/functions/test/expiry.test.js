@@ -1551,3 +1551,151 @@ test("M: a LEGACY commitment with many unlogged days is not removed early", asyn
   assert.equal(db.__read(C1_PATH).failureReason, "windowClosedShort");
   assert.equal(db.__read(C1_PATH).missedDays, undefined);
 });
+
+// ---------------------------------------------------------------------------
+// Batch 9G: the sweep's settlements read by id only
+//
+// The sweep chooses candidates with plain queries OUTSIDE any transaction -
+// allowed - and settles each through `runForfeitCommitment`, whose transaction
+// must perform no query read at all. Under `forbidQueriesInTransactions` for
+// both commitment shapes (legacy 18-day, current 16-day miss rule), and for
+// every already-settled state. Concurrency and mid-flight changes need a fake
+// that detects conflicts; those are in commitments.test.js.
+// ---------------------------------------------------------------------------
+
+const { forbidQueriesInTransactions } = require("./txGuard");
+
+const guarded = (seed, opts) => forbidQueriesInTransactions(fakeDb(seed), opts);
+const forfeitsIn = (db) => ledgerOf(db).filter((e) => e.kind === "forfeit");
+
+test("9G sweep: a LEGACY 18-day commitment settles with no query read in its transaction", async () => {
+  const db = guarded(expiredWorld({ logs: 3 }));
+  assert.equal(db.__read(C1_PATH).windowDays, LEGACY_COMMITMENT_WINDOW_DAYS);
+  const summary = await runExpirySweep(db, { nowMillis: AFTER });
+  assert.equal(summary.forfeitedCount, 1);
+  assert.equal(summary.failedCount, 0);
+  assert.deepEqual(db.__queryViolations, []);
+  const a = db.__read(C1_PATH);
+  assert.equal(a.status, "failed");
+  assert.equal(a.failureReason, "windowClosedShort");
+  assert.equal(a.qualifyingDays, 3);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 50);
+  assertWalletSound(db);
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 0, "exactly one slot released");
+});
+
+test("9G sweep: a CURRENT 16-day commitment's 3rd-miss removal has no query read either", async () => {
+  const db = guarded(missWorld({ loggedDays: days(1, 9, [3, 5, 7]) }));
+  assert.equal(db.__read(C1_PATH).windowDays, 16);
+  const summary = await runExpirySweep(db, { nowMillis: nAt(10) });
+  assert.equal(summary.forfeitedCount, 1);
+  assert.deepEqual(db.__queryViolations, []);
+  const a = db.__read(C1_PATH);
+  assert.equal(a.failureReason, "tooManyMisses");
+  assert.equal(a.missedDays, 3);
+  assert.equal(a.qualifyingDays, 6);
+  assertWalletSound(db);
+  assertReconciles(db);
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 0);
+});
+
+test("9G sweep: repeated sweeps settle once - one ledger entry, one slot, no query reads", async () => {
+  const db = guarded(missWorld({ loggedDays: [], testerCount: 5 }));
+  for (let i = 0; i < 5; i += 1) await runExpirySweep(db, { nowMillis: nAt(6) + i });
+  assert.equal(forfeitsIn(db).length, 1);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 50);
+  assert.equal(db.__read(`apps/${APP}`).testerCount, 4);
+  assertWalletSound(db);
+  assertReconciles(db);
+  assert.deepEqual(db.__queryViolations, []);
+});
+
+test("9G sweep: an outage record in the window is still credited - no forfeiture", async () => {
+  // Half a day past the raw 18-day window; one declared day keeps it open.
+  const day = W.firstEligibleDayKey;
+  const db = guarded(
+    expiredWorld({
+      logs: 3,
+      extra: { [`systemHealth/${day}`]: { dayKey: day, degraded: true, scope: OUTAGE_SCOPE_GLOBAL } },
+    }),
+  );
+  const summary = await runExpirySweep(db, { nowMillis: boundaryMillis() + 12 * 60 * 60 * 1000 });
+  assert.equal(summary.forfeitedCount, 0);
+  assert.equal(db.__read(C1_PATH).status, "inProgress");
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.deepEqual(db.__queryViolations, []);
+
+  // And without the declaration the same instant forfeits.
+  const plain = guarded(expiredWorld({ logs: 3 }));
+  const s2 = await runExpirySweep(plain, { nowMillis: boundaryMillis() + 12 * 60 * 60 * 1000 });
+  assert.equal(s2.forfeitedCount, 1);
+});
+
+test("9G sweep: an outage on an UNRELATED app is not credited", async () => {
+  const day = W.firstEligibleDayKey;
+  const db = guarded(
+    expiredWorld({
+      logs: 3,
+      extra: {
+        [`systemHealth/${day}`]: { dayKey: day, degraded: true, scope: OUTAGE_SCOPE_APP, appId: OTHER_APP },
+      },
+    }),
+  );
+  const summary = await runExpirySweep(db, { nowMillis: boundaryMillis() + 12 * 60 * 60 * 1000 });
+  assert.equal(summary.forfeitedCount, 1);
+  assert.deepEqual(db.__queryViolations, []);
+});
+
+for (const status of ["completed", "cancelled", "failed"]) {
+  test(`9G sweep: an already-${status} commitment is left alone`, async () => {
+    const db = guarded(expiredWorld({ logs: 3, status }));
+    const before = JSON.stringify(db.__read(WALLET_PATH));
+    const summary = await runExpirySweep(db, { nowMillis: AFTER });
+    assert.equal(summary.forfeitedCount, 0);
+    assert.equal(summary.failedCount, 0);
+    assert.equal(JSON.stringify(db.__read(WALLET_PATH)), before, "no coin moved");
+    assert.equal(db.__read(C1_PATH).status, status);
+    assert.equal(forfeitsIn(db).length, 0);
+    // Even forced straight at the primitive, it refuses without a query read.
+    await assert.rejects(
+      runForfeitCommitment(db, { assignmentId: C1, actorId: "system", actorKind: "system", nowMillis: AFTER }),
+    );
+    assert.deepEqual(db.__queryViolations, []);
+  });
+}
+
+test("9G sweep: a commitment that met its requirement is not forfeited", async () => {
+  const db = guarded(expiredWorld({ logs: 14 }));
+  const summary = await runExpirySweep(db, { nowMillis: AFTER });
+  assert.equal(summary.forfeitedCount, 0);
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.deepEqual(db.__queryViolations, []);
+});
+
+test("9G: the range-query outage reader refuses to run inside a transaction", async () => {
+  const { readOutageRecords } = require("../systemHealth");
+  const db = fakeDb({});
+  await assert.rejects(
+    readOutageRecords(db, { fromDayKey: W.firstEligibleDayKey, toDayKey: W.lastEligibleDayKey, tx: {} }),
+    /readOutageRecordsInTx/,
+  );
+});
+
+test("9G: point-read outage records equal the range query's, day for day", async () => {
+  const { readOutageRecords, readOutageRecordsInTx } = require("../systemHealth");
+  const inside = addDays(W.firstEligibleDayKey, 3);
+  const edge = W.lastEligibleDayKey;
+  const db = fakeDb({
+    [`systemHealth/${W.firstEligibleDayKey}`]: { dayKey: W.firstEligibleDayKey, degraded: true, scope: OUTAGE_SCOPE_GLOBAL },
+    [`systemHealth/${inside}`]: { dayKey: inside, degraded: false, scope: OUTAGE_SCOPE_APP, appId: APP, reason: "cleared" },
+    [`systemHealth/${edge}`]: { dayKey: edge, degraded: true, scope: OUTAGE_SCOPE_APP, appId: OTHER_APP },
+    // Outside the window on both sides: neither reader may return these.
+    [`systemHealth/${addDays(W.firstEligibleDayKey, -1)}`]: { degraded: true, scope: OUTAGE_SCOPE_GLOBAL },
+    [`systemHealth/${addDays(edge, 1)}`]: { degraded: true, scope: OUTAGE_SCOPE_GLOBAL },
+  });
+  const range = { fromDayKey: W.firstEligibleDayKey, toDayKey: W.lastEligibleDayKey };
+  const byQuery = await readOutageRecords(db, range);
+  const byId = await db.runTransaction((tx) => readOutageRecordsInTx(tx, db, range));
+  assert.equal(byQuery.length, 3);
+  assert.deepEqual(byId, byQuery);
+});

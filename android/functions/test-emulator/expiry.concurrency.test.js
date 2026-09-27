@@ -787,3 +787,137 @@ test("F: the forfeited cycle's ledger entry is immutable", async () => {
   const again = await db.doc(ledgerPath(forfeitEntryId(C1))).get();
   assert.deepEqual(again.get("createdAt"), entry.get("createdAt"), "the entry never changed");
 });
+
+// ---------------------------------------------------------------------------
+// 9G. Settlements under contention: no "Transaction is invalid or closed"
+//
+// Batch 9F's full run logged "expiry sweep could not settle ... Transaction is
+// invalid or closed" from racing sweeps: the settlement transaction ran range
+// and count QUERIES, and the emulator kills a contended transaction mid-query
+// with a non-retryable INVALID_ARGUMENT. Settlements now read by id only.
+//
+// These rounds assert the symptom is gone - no sweep reports a failed
+// settlement, and every losing direct call is refused with a business code -
+// while a guard on the REAL SDK proves no settlement transaction issues a
+// query read, transactional or plain. The guard is installed only after
+// seeding (seeding claims legitimately query) and always removed.
+// ---------------------------------------------------------------------------
+
+const { AsyncLocalStorage } = require("node:async_hooks");
+const { Firestore, Transaction, Query } = require("firebase-admin/firestore");
+// Not exported by name; every count() query is one.
+const AggregateQuery = Object.getPrototypeOf(getFirestore().collection("x").count()).constructor;
+const { runCancelCommitment } = require("../commitments");
+
+/** Business refusals a losing settlement may legitimately see. */
+const BUSINESS_CODES = new Set(["failed-precondition", "already-exists", "not-found", 6, 9]);
+
+function installRealSdkQueryGuard() {
+  const inside = new AsyncLocalStorage();
+  const violations = [];
+  const originals = {
+    runTransaction: Firestore.prototype.runTransaction,
+    txGet: Transaction.prototype.get,
+    queryGet: Query.prototype.get,
+    aggregateGet: AggregateQuery.prototype.get,
+  };
+  const flag = (what) => {
+    violations.push(what);
+    return new Error(`query read inside a transaction: ${what}`);
+  };
+  Firestore.prototype.runTransaction = function (fn, opts) {
+    return originals.runTransaction.call(this, (tx) => inside.run(true, () => fn(tx)), opts);
+  };
+  Transaction.prototype.get = function (target, ...rest) {
+    if (target instanceof Query || target instanceof AggregateQuery) {
+      return Promise.reject(flag(target instanceof AggregateQuery ? "tx.get(aggregate)" : "tx.get(query)"));
+    }
+    return originals.txGet.call(this, target, ...rest);
+  };
+  Query.prototype.get = function (...args) {
+    if (inside.getStore()) return Promise.reject(flag("query.get() in a transaction callback"));
+    return originals.queryGet.apply(this, args);
+  };
+  AggregateQuery.prototype.get = function (...args) {
+    if (inside.getStore()) return Promise.reject(flag("aggregate.get() in a transaction callback"));
+    return originals.aggregateGet.apply(this, args);
+  };
+  return {
+    violations,
+    remove() {
+      Firestore.prototype.runTransaction = originals.runTransaction;
+      Transaction.prototype.get = originals.txGet;
+      Query.prototype.get = originals.queryGet;
+      AggregateQuery.prototype.get = originals.aggregateGet;
+    },
+  };
+}
+
+function assertBusinessRefusals(rejected, label) {
+  for (const r of rejected) {
+    const reason = r.reason || {};
+    assert.ok(
+      BUSINESS_CODES.has(reason.code),
+      `${label}: a loser got a non-business error (${reason.code}): ${reason.message}`,
+    );
+    assert.doesNotMatch(String(reason.message), /invalid or closed/, label);
+  }
+}
+
+test("9G: racing sweeps and forfeitures settle once, with no failed settlement, across 10 rounds", async () => {
+  for (let round = 0; round < 10; round += 1) {
+    await clearFirestore();
+    await seedCommitment({ done: 2 });
+    const guard = installRealSdkQueryGuard();
+    let outcome;
+    try {
+      outcome = await settled([
+        runExpirySweep(db, { nowMillis: boundary() }),
+        runExpirySweep(db, { nowMillis: boundary() }),
+        runExpirySweep(db, { nowMillis: boundary() }),
+        runForfeitCommitment(db, { assignmentId: C1, actorId: "system", actorKind: "system", nowMillis: boundary() }),
+        runForfeitCommitment(db, { assignmentId: C1, actorId: "system", actorKind: "system", nowMillis: boundary() }),
+      ]);
+    } finally {
+      guard.remove();
+    }
+    const label = `round ${round}`;
+    assert.deepEqual(guard.violations, [], `${label}: query reads inside a settlement transaction`);
+    const summaries = outcome.fulfilled.map((r) => r.value).filter((v) => v && "failedCount" in v);
+    for (const s of summaries) {
+      assert.equal(s.failedCount, 0, `${label}: a sweep could not settle: ${JSON.stringify(s.failed)}`);
+    }
+    assertBusinessRefusals(outcome.rejected, label);
+    const state = await observe();
+    assert.equal(state.wallet.forfeitedTotal, 50, label);
+    assertExactlyOneTerminalOutcome(state, label);
+  }
+});
+
+test("9G: racing cancellations and a sweep settle once, with no failed settlement, across 10 rounds", async () => {
+  for (let round = 0; round < 10; round += 1) {
+    await clearFirestore();
+    await seedCommitment({ done: 2 });
+    const now = atEligibleDay(5);
+    const cancelCall = () =>
+      runCancelCommitment(db, { assignmentId: C1, actorId: TESTER, actorKind: "user", nowMillis: now });
+    const guard = installRealSdkQueryGuard();
+    let outcome;
+    try {
+      // The sweep finds nothing to forfeit mid-window, but still races the
+      // cancellations for the same documents.
+      outcome = await settled([cancelCall(), cancelCall(), cancelCall(), runExpirySweep(db, { nowMillis: now })]);
+    } finally {
+      guard.remove();
+    }
+    const label = `round ${round}`;
+    assert.deepEqual(guard.violations, [], `${label}: query reads inside a settlement transaction`);
+    const cancelled = outcome.fulfilled.filter((r) => r.value && r.value.cancelled);
+    assert.equal(cancelled.length, 1, `${label}: exactly one cancellation`);
+    assertBusinessRefusals(outcome.rejected, label);
+    const state = await observe();
+    assert.equal(state.wallet.available, 50, `${label}: the stake came back once`);
+    assert.equal(state.wallet.locked, 0, label);
+    assertExactlyOneTerminalOutcome(state, label);
+  }
+});

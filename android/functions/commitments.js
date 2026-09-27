@@ -85,12 +85,21 @@ const {
   holdsCapacity,
   releasedTesterCount,
 } = require("./lib/commitments");
-const { deriveWindow, isValidTimeZone } = require("./lib/testingDays");
+const {
+  addDays,
+  dayKeyRange,
+  deriveWindow,
+  isValidDayKey,
+  isValidTimeZone,
+  testingLogId,
+} = require("./lib/testingDays");
+const { MAX_OUTAGE_EXTENSION_DAYS } = require("./lib/outages");
 const { appGroupId, checkAppReadiness, checkJoinPrerequisites } = require("./lib/setup");
 const { checkCommitmentExpiry } = require("./lib/expiry");
 const { missRuleApplies, readMissEvidence, removalCheckAtMillis } = require("./lib/misses");
-const { readOutageRecords } = require("./systemHealth");
+const { readOutageRecordsInTx } = require("./systemHealth");
 const { readWalletForUpdate, stageWalletEntry } = require("./wallet");
+const { runSettlementTransaction } = require("./lib/transactions");
 const { requireAuth, requireAdmin, requireDocId } = require("./lib/guards");
 
 function claimPath(appId, testerId) {
@@ -109,17 +118,62 @@ function millisOf(value) {
 }
 
 /**
- * Count the tester's qualifying days from the logs themselves.
+ * Longest run of days `countQualifyingDays` reads by id. A real window plus the
+ * largest outage extension is under 50 days; anything past this is corrupt.
+ */
+const MAX_LOG_READ_DAYS = 400;
+
+/**
+ * Locate an assignment's testing logs by a plain query, OUTSIDE any
+ * transaction. Used only to find logs on days `countQualifyingDays` would not
+ * otherwise read (see there); it is never the count itself.
+ */
+async function locateLogRefs(db, assignmentId) {
+  const snap = await db.collection("testingLogs").where("assignmentId", "==", assignmentId).get();
+  return snap.docs.map((d) => d.ref);
+}
+
+/**
+ * Count the tester's qualifying days from the logs themselves, by POINT READS
+ * in the caller's transaction.
  *
  * The authority for settlement. `qualifyingDays` on the assignment is a cached
  * display value maintained by `recordTestingDay`; this recount is what
  * decides whether coins move.
+ *
+ * It used to be a `count()` aggregation query inside the transaction, which
+ * under contention the emulator killed with a non-retryable "Transaction is
+ * invalid or closed" (Batch 9G). It now reads, by deterministic id
+ * (`testingLogId`), every day a log can exist on: `recordTestingDay` - the only
+ * writer of logs - refuses any day outside the window, and outage credit
+ * extends the window by at most MAX_OUTAGE_EXTENSION_DAYS. The range is the
+ * stored window plus that CAP, never the current outage credit: clearing an
+ * outage can shrink the credit after a log was written on an extension day,
+ * and a range that shrank with it would undercount.
+ *
+ * Missing days are read too, so a log created mid-flight conflicts with this
+ * transaction and forces a retry. `locatedRefs` adds any log `locateLogRefs`
+ * found on some other day - only data older than today's rules could be
+ * there, and nothing can create one now, so a list located before the
+ * transaction cannot go stale. Each document is re-checked by assignmentId
+ * before it counts.
  */
-async function countQualifyingDays(tx, db, assignmentId) {
-  const snap = await tx.get(
-    db.collection("testingLogs").where("assignmentId", "==", assignmentId).count(),
-  );
-  return snap.data().count;
+async function countQualifyingDays(tx, db, assignmentSnap, locatedRefs = []) {
+  const assignmentId = assignmentSnap.id;
+  const paths = new Set();
+  const first = assignmentSnap.get("firstEligibleDayKey");
+  const last = assignmentSnap.get("lastEligibleDayKey");
+  if (isValidDayKey(first) && isValidDayKey(last)) {
+    const days = dayKeyRange(first, addDays(last, MAX_OUTAGE_EXTENSION_DAYS), MAX_LOG_READ_DAYS);
+    if (days === null) {
+      throw new HttpsError("failed-precondition", "This commitment's testing window is not readable.");
+    }
+    for (const day of days) paths.add(`testingLogs/${testingLogId(assignmentId, day)}`);
+  }
+  for (const ref of locatedRefs) paths.add(ref.path);
+
+  const snaps = await Promise.all([...paths].map((path) => tx.get(db.doc(path))));
+  return snaps.filter((snap) => snap.exists && snap.get("assignmentId") === assignmentId).length;
 }
 
 /**
@@ -645,8 +699,11 @@ async function runForfeitCommitment(
   { assignmentId, actorId, actorKind, nowMillis = Date.now() },
 ) {
   const assignmentRef = db.doc(assignmentPath(assignmentId));
+  // Outside the transaction: a plain query, never a transactional read. See
+  // `countQualifyingDays` for why a list taken now cannot go stale.
+  const locatedLogRefs = await locateLogRefs(db, assignmentId);
 
-  return db.runTransaction(async (tx) => {
+  return runSettlementTransaction(db, async (tx) => {
     const assignmentSnap = await tx.get(assignmentRef);
     if (!assignmentSnap.exists) {
       throw new HttpsError("not-found", "That assignment no longer exists.");
@@ -659,7 +716,7 @@ async function runForfeitCommitment(
 
     // Recounted, never taken from the cached field: forfeiting a tester who
     // actually did the work would be the worst possible bug here.
-    const qualifyingDays = await countQualifyingDays(tx, db, assignmentId);
+    const qualifyingDays = await countQualifyingDays(tx, db, assignmentSnap, locatedLogRefs);
 
     // Gate 1, BEFORE any further read - exactly where it always ran, so every
     // refusal (settled, no stake, calendar not elapsed) still happens before
@@ -690,13 +747,13 @@ async function runForfeitCommitment(
     // degraded while this transaction is in flight changes a document this
     // transaction has read, so Firestore aborts and retries it, and the retry
     // sees the declaration and declines to forfeit. Reading them before the
-    // transaction would settle the race by luck.
+    // transaction would settle the race by luck. Read by id, every day of the
+    // window, declared or not - see `readOutageRecordsInTx`.
     const firstEligibleDayKey = assignmentSnap.get("firstEligibleDayKey");
     const lastEligibleDayKey = assignmentSnap.get("lastEligibleDayKey");
-    const outageRecords = await readOutageRecords(db, {
+    const outageRecords = await readOutageRecordsInTx(tx, db, {
       fromDayKey: firstEligibleDayKey,
       toDayKey: lastEligibleDayKey,
-      tx,
     });
     const loggedDayKeys = await readMissEvidenceInTx(tx, db, assignmentSnap, {
       outageRecords,
@@ -872,8 +929,11 @@ async function runCancelCommitment(
   { assignmentId, actorId, actorKind, isAdmin = false, nowMillis = Date.now() },
 ) {
   const assignmentRef = db.doc(assignmentPath(assignmentId));
+  // Outside the transaction: a plain query, never a transactional read. See
+  // `countQualifyingDays` for why a list taken now cannot go stale.
+  const locatedLogRefs = await locateLogRefs(db, assignmentId);
 
-  return db.runTransaction(async (tx) => {
+  return runSettlementTransaction(db, async (tx) => {
     const assignmentSnap = await tx.get(assignmentRef);
     if (!assignmentSnap.exists) {
       throw new HttpsError("not-found", "That assignment no longer exists.");
@@ -902,11 +962,10 @@ async function runCancelCommitment(
     // has settled it. Nothing here depends on the sweep having run.
     const firstEligibleDayKey = assignmentSnap.get("firstEligibleDayKey");
     const lastEligibleDayKey = assignmentSnap.get("lastEligibleDayKey");
-    const qualifyingDays = await countQualifyingDays(tx, db, assignmentId);
-    const outageRecords = await readOutageRecords(db, {
+    const qualifyingDays = await countQualifyingDays(tx, db, assignmentSnap, locatedLogRefs);
+    const outageRecords = await readOutageRecordsInTx(tx, db, {
       fromDayKey: firstEligibleDayKey,
       toDayKey: lastEligibleDayKey,
-      tx,
     });
     const loggedDayKeys = await readMissEvidenceInTx(tx, db, assignmentSnap, {
       outageRecords,

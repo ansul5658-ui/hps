@@ -42,7 +42,8 @@ const {
   nextCheckInAtMillis,
 } = require("./lib/testingDays");
 const { stageUnlockSettlement, assignmentPath } = require("./commitments");
-const { readOutageRecords } = require("./systemHealth");
+const { runSettlementTransaction } = require("./lib/transactions");
+const { readOutageRecordsInTx } = require("./systemHealth");
 const { effectiveLastEligibleDayKey, applicableOutageDayKeys } = require("./lib/outages");
 const {
   missRuleApplies,
@@ -91,7 +92,7 @@ async function runRecordTestingDay(db, { assignmentId, testerId, nowMillis = Dat
   const assignmentRef = db.doc(assignmentPath(assignmentId));
   const userRef = db.doc(`users/${testerId}`);
 
-  return db.runTransaction(async (tx) => {
+  return runSettlementTransaction(db, async (tx) => {
     // ---- reads: all of them, before any write ------------------------
     const [assignmentSnap, userSnap] = await Promise.all([
       tx.get(assignmentRef),
@@ -145,10 +146,9 @@ async function runRecordTestingDay(db, { assignmentId, testerId, nowMillis = Dat
     // Read inside the transaction for the same reason forfeiture does it: a
     // declaration landing mid-flight must make this transaction retry rather
     // than be missed.
-    const outageRecords = await readOutageRecords(db, {
+    const outageRecords = await readOutageRecordsInTx(tx, db, {
       fromDayKey: clock.firstEligibleDayKey,
       toDayKey: clock.lastEligibleDayKey,
-      tx,
     });
     const effectiveLastDayKey = effectiveLastEligibleDayKey({
       firstEligibleDayKey: clock.firstEligibleDayKey,

@@ -114,6 +114,13 @@ function fakeDb(seed = {}, opts = {}) {
       if (op === "<=") return id <= other;
       return id === other;
     }
+    // The sweep's candidate queries (Batch 9G tests run the sweep here too).
+    if (op === "in") return Array.isArray(value) && value.includes(data[field]);
+    if (op === "<=") {
+      const a = data[field] && data[field].toMillis ? data[field].toMillis() : data[field];
+      const b = value instanceof Date ? value.getTime() : value;
+      return a !== undefined && a !== null && a <= b;
+    }
     return data[field] === value;
   }
 
@@ -125,11 +132,18 @@ function fakeDb(seed = {}, opts = {}) {
       .filter(({ id, rec }) => filters.every((f) => passes(id, rec.data, f)));
   }
 
-  function collectionRef(name, filters = []) {
+  function collectionRef(name, filters = [], limit = null) {
     return {
       __query: { collection: name, filters },
       where(field, op, value) {
-        return collectionRef(name, [...filters, [field, op, value]]);
+        return collectionRef(name, [...filters, [field, op, value]], limit);
+      },
+      // Ordering is by id here, which is all the sweep's assertions rely on.
+      orderBy() {
+        return collectionRef(name, filters, limit);
+      },
+      limit(n) {
+        return collectionRef(name, filters, n);
       },
       count() {
         return { __count: { collection: name, filters } };
@@ -137,7 +151,8 @@ function fakeDb(seed = {}, opts = {}) {
       // A plain, non-transactional query: it reads the committed store and,
       // unlike `tx.get(query)`, takes no part in the conflict check.
       async get() {
-        const rows = matching(name, filters);
+        const all = matching(name, filters);
+        const rows = limit ? all.slice(0, limit) : all;
         return {
           empty: rows.length === 0,
           size: rows.length,
@@ -1901,4 +1916,480 @@ test("9A: a legacy 18-day commitment keeps its stored rules - nothing rewrites i
   const out = await cancel(db, { nowMillis: day17 });
   assert.equal(out.cancelled, true);
   assertWalletSound(db);
+});
+
+// ---------------------------------------------------------------------------
+// Batch 9G: cancellation and forfeiture read by id only
+//
+// Both settlement transactions used to read the outage declarations with a
+// range query and recount the logs with a count() query, inside the
+// transaction. Under contention the emulator killed those with a
+// non-retryable "Transaction is invalid or closed". They now point-read every
+// window day (declared or not) and every possible log id. These tests run
+// under `forbidQueriesInTransactions`, and prove the point reads still carry
+// the guarantees the queries did: a declaration, a clearance or a log landing
+// mid-flight forces a retry and a fresh decision.
+// ---------------------------------------------------------------------------
+
+const { forbidQueriesInTransactions } = require("./txGuard");
+const { testingLogId } = require("../lib/testingDays");
+
+/** Eligible day `n` (1-based) of `claimedWorld`'s pinned window. */
+const w0Day = (n) => addDays(W0.firstEligibleDayKey, n - 1);
+const outageDoc = (dayKey, degraded = true) => ({ dayKey, degraded, scope: "global", appId: null });
+const logDoc = (dayKey) => ({ assignmentId: C1, testerId: TESTER, date: dayKey, cycle: 1 });
+/** Noon, one day past the raw window: expired unless one outage day is credited. */
+const PAST_WINDOW = W0_BOUNDARY + 12 * HOUR;
+
+/** `claimedWorld` holding a slot, with `logs` logs on real window days. */
+function g9World({ logs = 3, testerCount = 5, extra = {} } = {}) {
+  const seed = claimedWorld({ logs: 0 });
+  seed[C1_PATH].qualifyingDays = logs;
+  seed[C1_PATH].daysCompleted = logs;
+  seed[C1_PATH].capacityHeld = true;
+  seed["apps/app1"].testerCount = testerCount;
+  for (let n = 1; n <= logs; n += 1) seed[`testingLogs/${testingLogId(C1, w0Day(n))}`] = logDoc(w0Day(n));
+  return { ...seed, ...extra };
+}
+
+const g9Forfeit = (db, nowMillis) =>
+  runForfeitCommitment(db, { assignmentId: C1, actorId: "system", actorKind: "system", nowMillis });
+
+/** Write `data` as a concurrent committed transaction would: a new version. */
+function landWrite(store, path, data) {
+  const rec = store.get(path);
+  store.set(path, { data: { ...(rec ? rec.data : {}), ...data }, version: (rec ? rec.version : 0) + 1 });
+}
+
+function ledgerIds(db) {
+  return [...db.__store.keys()].filter((p) => p.startsWith(`users/${TESTER}/coinTransactions/`)).sort();
+}
+
+// ---- structural guards ----------------------------------------------------
+
+test("9G guard: cancellation performs no query reads inside its transaction", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World()));
+  const out = await cancel(db);
+  assert.equal(out.cancelled, true);
+  assert.deepEqual(db.__queryViolations, []);
+});
+
+test("9G guard: forfeiture performs no query reads inside its transaction", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World({ logs: 3 })));
+  const out = await g9Forfeit(db, PAST_WINDOW);
+  assert.equal(out.forfeited, true);
+  assert.deepEqual(db.__queryViolations, []);
+});
+
+test("9G guard: the guard itself catches a transactional query and a hidden plain one", async () => {
+  // Proof the guard is live, so the tests above cannot pass vacuously.
+  const db = forbidQueriesInTransactions(fakeDb(g9World()));
+  await assert.rejects(
+    db.runTransaction((tx) => tx.get(db.collection("testingLogs").where("assignmentId", "==", C1))),
+    /tx\.get\(query\)/,
+  );
+  await assert.rejects(
+    db.runTransaction((tx) => tx.get(db.collection("testingLogs").where("assignmentId", "==", C1).count())),
+    /count/,
+  );
+  const hiddenHelper = () => db.collection("systemHealth").where("degraded", "==", true).get();
+  await assert.rejects(db.runTransaction(() => hiddenHelper()), /collection\(systemHealth\)\.get\(\)/);
+  // Outside a transaction the same plain query is fine.
+  await hiddenHelper();
+});
+
+// ---- cancellation ---------------------------------------------------------
+
+test("9G cancel: a normal cancellation returns the stake, releases one slot, one ledger entry", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 })));
+  await cancel(db);
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.available, 50);
+  assert.equal(w.locked, 0);
+  assertWalletSound(db);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(db.__read(C1_PATH).capacityHeld, false);
+  assert.equal(db.__read(C1_PATH).status, "cancelled");
+  assert.deepEqual(ledgerIds(db), [`users/${TESTER}/coinTransactions/${cancelEntryId(C1)}`]);
+});
+
+test("9G cancel: a second cancellation is refused and moves nothing", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 })));
+  await cancel(db);
+  await assert.rejects(cancel(db));
+  assert.equal(db.__read(WALLET_PATH).available, 50);
+  assert.equal(db.__read("apps/app1").testerCount, 4, "the slot is released once");
+  assert.equal(ledgerIds(db).length, 1);
+});
+
+test("9G cancel: refused once the window has closed short, and nothing moves", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World()));
+  await assert.rejects(cancel(db, { nowMillis: PAST_WINDOW }), /closed short/);
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.equal(db.__read("apps/app1").testerCount, 5);
+  assert.deepEqual(db.__queryViolations, []);
+});
+
+test("9G cancel: refused after a forfeiture, and nothing moves", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 })));
+  await g9Forfeit(db, PAST_WINDOW);
+  await assert.rejects(cancel(db, { nowMillis: PAST_WINDOW }));
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.available, 0);
+  assert.equal(w.forfeitedTotal, 50);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(ledgerIds(db).length, 1);
+});
+
+test("9G cancel: a declared outage still extends the window it may cancel in", async () => {
+  const day = w0Day(1);
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9World({ extra: { [`systemHealth/${day}`]: outageDoc(day) } })),
+  );
+  const out = await cancel(db, { nowMillis: PAST_WINDOW });
+  assert.equal(out.cancelled, true);
+  assertWalletSound(db);
+});
+
+test("9G cancel: an outage DECLARED mid-flight forces a retry on an undeclared day", async () => {
+  // No declaration existed when the transaction read systemHealth/{day}: it read
+  // a MISSING document. A declaration landing before the commit must still
+  // conflict - that is what the old range query guaranteed.
+  const day = w0Day(2);
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9World(), {
+      beforeCommit: ({ attempt, bump }) => {
+        if (attempt === 1) bump(`systemHealth/${day}`, outageDoc(day));
+      },
+    }),
+  );
+  const out = await cancel(db);
+  assert.equal(out.cancelled, true);
+  assert.equal(db.__state.attempts, 2, "the new declaration was seen and the decision re-made");
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(ledgerIds(db).length, 1, "the retry did not settle twice");
+});
+
+test("9G cancel: an outage CLEARED mid-flight is re-read, and the late cancel is refused", async () => {
+  // Past the raw window, open only because of one outage day. The admin clears
+  // that day while the cancellation is in flight: the retry must see the
+  // window as closed short and refuse - fail closed, nothing moves.
+  const day = w0Day(1);
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9World({ extra: { [`systemHealth/${day}`]: outageDoc(day) } }), {
+      beforeCommit: ({ attempt, bump }) => {
+        if (attempt === 1) bump(`systemHealth/${day}`, { degraded: false });
+      },
+    }),
+  );
+  await assert.rejects(cancel(db, { nowMillis: PAST_WINDOW }), /closed short/);
+  assert.equal(db.__state.attempts, 2);
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.equal(db.__read("apps/app1").testerCount, 5);
+  assert.deepEqual(ledgerIds(db), []);
+});
+
+test("9G cancel: concurrent cancellations settle exactly once", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 })));
+  const results = await Promise.allSettled([cancel(db), cancel(db), cancel(db)]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.available, 50);
+  assert.equal(w.locked, 0);
+  assertWalletSound(db);
+  assert.equal(db.__read("apps/app1").testerCount, 4, "capacity released exactly once");
+  assert.equal(ledgerIds(db).length, 1, "one ledger entry");
+});
+
+// ---- forfeiture -----------------------------------------------------------
+
+test("9G forfeit: a normal forfeiture moves the stake to forfeited and releases one slot", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World({ logs: 3, testerCount: 5 })));
+  const out = await g9Forfeit(db, PAST_WINDOW);
+  assert.equal(out.qualifyingDays, 3);
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.locked, 0);
+  assert.equal(w.forfeitedTotal, 50);
+  assertWalletSound(db);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(db.__read(C1_PATH).status, "failed");
+  assert.deepEqual(ledgerIds(db), [`users/${TESTER}/coinTransactions/${forfeitEntryId(C1)}`]);
+});
+
+test("9G forfeit: repeated forfeiture is refused and moves nothing more", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 })));
+  await g9Forfeit(db, PAST_WINDOW);
+  await assert.rejects(g9Forfeit(db, PAST_WINDOW));
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 50);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(ledgerIds(db).length, 1);
+});
+
+test("9G forfeit: a declared outage in the window still prevents the forfeiture", async () => {
+  const day = w0Day(1);
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9World({ extra: { [`systemHealth/${day}`]: outageDoc(day) } })),
+  );
+  await assert.rejects(g9Forfeit(db, PAST_WINDOW));
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 0);
+});
+
+test("9G forfeit: an outage DECLARED mid-flight makes the retry decline to forfeit", async () => {
+  // The race the in-transaction read exists for: attempt 1 sees no outage and
+  // would forfeit; the declaration lands before it commits; the retry sees it,
+  // credits the day, and refuses. No coins are destroyed.
+  const day = w0Day(1);
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9World(), {
+      beforeCommit: ({ attempt, bump }) => {
+        if (attempt === 1) bump(`systemHealth/${day}`, outageDoc(day));
+      },
+    }),
+  );
+  await assert.rejects(g9Forfeit(db, PAST_WINDOW));
+  assert.equal(db.__state.attempts, 2);
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.locked, 50);
+  assert.equal(w.forfeitedTotal, 0);
+  assert.equal(db.__read("apps/app1").testerCount, 5);
+  assert.deepEqual(ledgerIds(db), []);
+});
+
+test("9G forfeit: an outage CLEARED after it was read fails closed, then settles next time", async () => {
+  // Attempt 1 reads the declaration and refuses (window extended). A refusal
+  // commits nothing, so it does not retry - the safe direction: the sweep
+  // simply forfeits on its next run, from a fresh read.
+  const day = w0Day(1);
+  let cleared = false;
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9World({ extra: { [`systemHealth/${day}`]: outageDoc(day) } })),
+    {
+      afterRead: (path, { store }) => {
+        if (!cleared && path === `systemHealth/${day}`) {
+          cleared = true;
+          landWrite(store, path, { degraded: false });
+        }
+      },
+    },
+  );
+  await assert.rejects(g9Forfeit(db, PAST_WINDOW));
+  assert.equal(db.__read(WALLET_PATH).locked, 50, "nothing forfeited on a stale snapshot");
+  const out = await g9Forfeit(db, PAST_WINDOW);
+  assert.equal(out.forfeited, true);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 50);
+  assertWalletSound(db);
+});
+
+test("9G forfeit: a log created mid-flight is counted by the retry - a met requirement is honoured", async () => {
+  // The recount is point reads of every possible log id, INCLUDING days with
+  // no log yet. A 14th day landing before the commit conflicts with that read.
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9World({ logs: 13 }), {
+      beforeCommit: ({ attempt, bump }) => {
+        if (attempt === 1) bump(`testingLogs/${testingLogId(C1, w0Day(14))}`, logDoc(w0Day(14)));
+      },
+    }),
+  );
+  await assert.rejects(g9Forfeit(db, PAST_WINDOW), /met/);
+  assert.equal(db.__state.attempts, 2);
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 0);
+});
+
+test("9G forfeit: a log on an outage-extension day counts even after the outage is cleared", async () => {
+  // The log range is the window plus the extension CAP, not the current
+  // credit: clearing the outage later must not make an earned day vanish.
+  const extraDay = addDays(W0.lastEligibleDayKey, 1);
+  const seed = g9World({ logs: 13 });
+  seed[`testingLogs/${testingLogId(C1, extraDay)}`] = logDoc(extraDay);
+  const db = forbidQueriesInTransactions(fakeDb(seed));
+  await assert.rejects(g9Forfeit(db, PAST_WINDOW + MILLIS_PER_DAY), /met/);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 0);
+});
+
+test("9G forfeit: logs outside the window (older data) still count, exactly as the query did", async () => {
+  // `claimedWorld` dates its logs outside the pinned window; the count must
+  // match the old count() query regardless. They are found by the plain query
+  // run before the transaction and point-read inside it.
+  const db = forbidQueriesInTransactions(fakeDb(claimedWorld({ logs: 14 })));
+  await assert.rejects(g9Forfeit(db, PAST_WINDOW), /met/);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 0);
+});
+
+test("9G forfeit: concurrent forfeitures settle exactly once", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 })));
+  const results = await Promise.allSettled([
+    g9Forfeit(db, PAST_WINDOW),
+    g9Forfeit(db, PAST_WINDOW),
+    g9Forfeit(db, PAST_WINDOW),
+  ]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.locked, 0);
+  assert.equal(w.forfeitedTotal, 50);
+  assertWalletSound(db);
+  assert.equal(db.__read("apps/app1").testerCount, 4, "capacity released exactly once");
+  assert.equal(ledgerIds(db).length, 1);
+});
+
+test("9G: a cancellation racing a forfeiture settles exactly once", async () => {
+  // Past the raw window with one outage day declared: cancel is allowed and
+  // forfeiture is refused, so exactly one outcome - the cancellation.
+  const day = w0Day(1);
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9World({ testerCount: 5, extra: { [`systemHealth/${day}`]: outageDoc(day) } })),
+  );
+  const results = await Promise.allSettled([cancel(db, { nowMillis: PAST_WINDOW }), g9Forfeit(db, PAST_WINDOW)]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  assert.equal(db.__read(C1_PATH).status, "cancelled");
+  assertWalletSound(db);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(ledgerIds(db).length, 1);
+});
+
+test("9G: a corrupt window too long to read day by day fails closed", async () => {
+  const seed = g9World();
+  seed[C1_PATH].firstEligibleDayKey = "2020-01-01";
+  const db = forbidQueriesInTransactions(fakeDb(seed));
+  await assert.rejects(g9Forfeit(db, PAST_WINDOW), /not readable/);
+  await assert.rejects(cancel(db), /not readable/);
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+});
+
+// ---- the expiry sweep, on a fake that detects conflicts -------------------
+// The sweep settles through `runForfeitCommitment`; these prove the whole
+// sweep keeps its guarantees when sweeps race each other and when state
+// changes under a settlement. "failed" in a summary is exactly the 9F symptom
+// ("expiry sweep could not settle..."), so every summary must report none.
+
+const { runExpirySweep } = require("../expiry");
+
+/** `g9World` carrying the `windowEndsAt` the sweep's candidate query filters on. */
+function g9SweepWorld(opts) {
+  const seed = g9World(opts);
+  seed[C1_PATH].windowEndsAt = { toMillis: () => W0.windowEndsAtMillis };
+  return seed;
+}
+
+const sweepAt = (db) => runExpirySweep(db, { nowMillis: PAST_WINDOW });
+
+test("9G sweep: three concurrent sweeps settle one commitment exactly once, with no failures", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(g9SweepWorld({ testerCount: 5 })));
+  const summaries = await Promise.all([sweepAt(db), sweepAt(db), sweepAt(db)]);
+  assert.equal(summaries.reduce((n, s) => n + s.forfeitedCount, 0), 1, "one settlement across all sweeps");
+  assert.equal(summaries.reduce((n, s) => n + s.failedCount, 0), 0, "no sweep 'could not settle'");
+  const w = db.__read(WALLET_PATH);
+  assert.equal(w.forfeitedTotal, 50);
+  assert.equal(w.locked, 0);
+  assertWalletSound(db);
+  assert.equal(db.__read("apps/app1").testerCount, 4, "capacity released exactly once");
+  assert.equal(ledgerIds(db).length, 1, "one ledger entry");
+  assert.deepEqual(db.__queryViolations, []);
+});
+
+test("9G sweep: an outage declared while the sweep is settling makes it skip, not forfeit", async () => {
+  const day = w0Day(1);
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9SweepWorld(), {
+      beforeCommit: ({ attempt, bump }) => {
+        if (attempt === 1) bump(`systemHealth/${day}`, outageDoc(day));
+      },
+    }),
+  );
+  const summary = await sweepAt(db);
+  assert.equal(summary.forfeitedCount, 0);
+  assert.equal(summary.skippedCount, 1);
+  assert.equal(summary.failedCount, 0);
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.equal(db.__read(C1_PATH).status, "inProgress");
+});
+
+test("9G sweep: a check-in landing during the sweep's settlement is honoured", async () => {
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9SweepWorld({ logs: 13 }), {
+      beforeCommit: ({ attempt, bump }) => {
+        if (attempt === 1) bump(`testingLogs/${testingLogId(C1, w0Day(14))}`, logDoc(w0Day(14)));
+      },
+    }),
+  );
+  const summary = await sweepAt(db);
+  assert.equal(summary.forfeitedCount, 0);
+  assert.equal(summary.failedCount, 0);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 0);
+});
+
+test("9G sweep: a sweep racing a cancellation settles the commitment exactly once", async () => {
+  // Past the raw window, one outage day declared: the cancellation is allowed
+  // and the sweep's forfeiture refused. Whatever the interleaving, one outcome.
+  const day = w0Day(1);
+  const db = forbidQueriesInTransactions(
+    fakeDb(g9SweepWorld({ testerCount: 5, extra: { [`systemHealth/${day}`]: outageDoc(day) } })),
+  );
+  const [, summary] = await Promise.all([cancel(db, { nowMillis: PAST_WINDOW }), sweepAt(db)]);
+  assert.equal(summary.failedCount, 0);
+  assert.equal(db.__read(C1_PATH).status, "cancelled");
+  assert.equal(db.__read(WALLET_PATH).available, 50);
+  assertWalletSound(db);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(ledgerIds(db).length, 1);
+});
+
+// ---- a transaction killed as "invalid or closed" is retried, safely --------
+
+/** Make the next `n` transactions fail as the emulator's killed transaction does. */
+function killNextTransactions(db, n) {
+  const run = db.runTransaction.bind(db);
+  let left = n;
+  db.runTransaction = (fn, ...rest) => {
+    if (left > 0) {
+      left -= 1;
+      return Promise.reject(Object.assign(new Error("3 INVALID_ARGUMENT: Transaction is invalid or closed."), { code: 3 }));
+    }
+    return run(fn, ...rest);
+  };
+  return db;
+}
+
+test("9G retry: a cancellation whose transaction was killed is retried and settles once", async () => {
+  const db = killNextTransactions(forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 }))), 2);
+  const out = await cancel(db);
+  assert.equal(out.cancelled, true);
+  assert.equal(db.__read(WALLET_PATH).available, 50);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(ledgerIds(db).length, 1);
+});
+
+test("9G retry: a forfeiture whose transaction was killed is retried and settles once", async () => {
+  const db = killNextTransactions(forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 }))), 2);
+  const out = await g9Forfeit(db, PAST_WINDOW);
+  assert.equal(out.forfeited, true);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 50);
+  assert.equal(db.__read("apps/app1").testerCount, 4);
+  assert.equal(ledgerIds(db).length, 1);
+});
+
+test("9G retry: the sweep settles through a killed transaction and reports no failure", async () => {
+  const db = killNextTransactions(forbidQueriesInTransactions(fakeDb(g9SweepWorld({ testerCount: 5 }))), 1);
+  const summary = await sweepAt(db);
+  assert.equal(summary.forfeitedCount, 1);
+  assert.equal(summary.failedCount, 0);
+  assert.equal(ledgerIds(db).length, 1);
+});
+
+test("9G sweep: a raw ALREADY_EXISTS (6) from the ledger backstop is a skip, not a failure", async () => {
+  const db = fakeDb(g9SweepWorld());
+  db.runTransaction = () =>
+    Promise.reject(Object.assign(new Error("6 ALREADY_EXISTS: entity already exists"), { code: 6 }));
+  const summary = await sweepAt(db);
+  assert.equal(summary.skippedCount, 1);
+  assert.equal(summary.failedCount, 0);
+});
+
+test("9G sweep: a genuinely unexpected error is still reported as a failure", async () => {
+  const db = fakeDb(g9SweepWorld());
+  db.runTransaction = () => Promise.reject(Object.assign(new Error("13 INTERNAL: boom"), { code: 13 }));
+  const summary = await sweepAt(db);
+  assert.equal(summary.failedCount, 1);
+  assert.equal(summary.skippedCount, 0);
 });

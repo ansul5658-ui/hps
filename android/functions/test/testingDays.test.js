@@ -1190,3 +1190,58 @@ test("N: the completing 14th day also stamps a boundary", async () => {
   assert.equal(db.__read(WALLET_PATH).available, 50);
   assert.equal(db.__read(WALLET_PATH).locked, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Batch 9G: the check-in transaction reads outages by id
+//
+// The 14th check-in IS a settlement (it unlocks the stake in this same
+// transaction) and it races the expiry sweep. It read the outage declarations
+// with a range query inside the transaction; it now point-reads every window
+// day, declared or not.
+// ---------------------------------------------------------------------------
+
+const { forbidQueriesInTransactions } = require("./txGuard");
+
+test("9G guard: the completing 14th check-in performs no query read inside its transaction", async () => {
+  const db = forbidQueriesInTransactions(fakeDb(committedWorld({ done: 13 })));
+  const out = await checkIn(db, atEligibleDay(14));
+  assert.equal(out.completed, true);
+  assert.deepEqual(db.__queryViolations, []);
+  assert.equal(db.__read(WALLET_PATH).available, 50);
+  assert.equal(checkInvariants(db.__read(WALLET_PATH)).ok, true);
+});
+
+test("9G: an outage declared mid-check-in, on an undeclared day, forces a retry", async () => {
+  // The transaction read systemHealth/{day} while it did not exist. A
+  // declaration created before the commit must still conflict with that read.
+  const seed = committedWorld({ done: 13 });
+  const day = seed[C1_PATH].firstEligibleDayKey;
+  const db = forbidQueriesInTransactions(
+    fakeDb(seed, {
+      beforeCommit: ({ attempt, bump }) => {
+        if (attempt === 1) bump(`systemHealth/${day}`, { dayKey: day, degraded: true, scope: "global" });
+      },
+    }),
+  );
+  const out = await checkIn(db, atEligibleDay(14));
+  assert.equal(out.completed, true);
+  assert.ok(db.__state.attempts >= 2, "the declaration was seen and the check-in re-decided");
+  const unlocks = [...db.__store.keys()].filter((k) => k.includes("/coinTransactions/unlock_"));
+  assert.equal(unlocks.length, 1, "the retry did not settle twice");
+  assert.deepEqual(db.__queryViolations, []);
+});
+
+test("9G: dayKeyRange spans exactly the days a __name__ range query would", () => {
+  const { dayKeyRange } = require("../lib/testingDays");
+  assert.deepEqual(dayKeyRange("2026-09-29", "2026-10-02", 10), ["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02"]);
+  assert.deepEqual(dayKeyRange("2026-03-08", "2026-03-08", 10), ["2026-03-08"], "one day, inclusive");
+  // Leap day and a year boundary, in civil-date arithmetic.
+  assert.deepEqual(dayKeyRange("2028-02-28", "2028-03-01", 10), ["2028-02-28", "2028-02-29", "2028-03-01"]);
+  assert.deepEqual(dayKeyRange("2026-12-31", "2027-01-01", 10), ["2026-12-31", "2027-01-01"]);
+  // Backwards or malformed: the query would match nothing.
+  assert.deepEqual(dayKeyRange("2026-10-02", "2026-09-29", 10), []);
+  assert.deepEqual(dayKeyRange("not-a-day", "2026-09-29", 10), []);
+  // Over the cap: null, so a point-reading caller can fail closed.
+  assert.equal(dayKeyRange("2026-01-01", "2026-01-11", 10), null);
+  assert.equal(dayKeyRange("2026-01-01", "2026-01-10", 10).length, 10);
+});

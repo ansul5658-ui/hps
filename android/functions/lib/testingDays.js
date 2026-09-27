@@ -116,6 +116,24 @@ function addDays(dayKey, days) {
   return utcMillisToDayKey(base + days * MILLIS_PER_DAY);
 }
 
+/**
+ * Every civil date from `fromKey` to `toKey`, both inclusive, in order - the
+ * same days a `__name__` range query over those two day-key ids spans.
+ *
+ * [] when either key is malformed or the range runs backwards (such a query
+ * matches nothing). null when it would exceed `maxDays`, so a caller about to
+ * read each day by id can fail closed on corrupt data instead of issuing an
+ * unbounded number of reads.
+ */
+function dayKeyRange(fromKey, toKey, maxDays) {
+  const span = daysBetween(fromKey, toKey);
+  if (span === null || span < 0) return [];
+  if (span + 1 > maxDays) return null;
+  const days = [];
+  for (let i = 0; i <= span; i += 1) days.push(addDays(fromKey, i));
+  return days;
+}
+
 /** Whole days from `fromKey` to `toKey`. Negative when `toKey` is earlier. */
 function daysBetween(fromKey, toKey) {
   const from = dayKeyToUtcMillis(fromKey);
@@ -471,6 +489,7 @@ module.exports = {
   dayKeyInZone,
   addDays,
   daysBetween,
+  dayKeyRange,
   zoneOffsetMillis,
   startOfLocalDayMillis,
   deriveWindow,

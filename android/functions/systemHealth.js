@@ -29,7 +29,7 @@ const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const logger = require("firebase-functions/logger");
 
 const { REGION, SYSTEM_HEALTH_COLLECTION, ACTOR_KIND_ADMIN } = require("./lib/constants");
-const { isValidDayKey } = require("./lib/testingDays");
+const { isValidDayKey, dayKeyRange } = require("./lib/testingDays");
 const {
   OUTAGE_SCOPE_GLOBAL,
   OUTAGE_SCOPE_APP,
@@ -50,19 +50,61 @@ function systemHealthPath(dayKey) {
  * at most a few dozen days, so the saving from a compound query would not pay
  * for the index or for the second code path.
  *
- * Takes an optional transaction so the forfeiture path can read declarations
- * INSIDE its transaction - which is what makes "an outage was declared while
- * the evaluator was running" resolve correctly instead of racing.
+ * OUTSIDE TRANSACTIONS ONLY. Settlement and check-in read declarations inside
+ * their transactions - which is what makes "an outage was declared while the
+ * evaluator was running" resolve correctly instead of racing - but they do it
+ * with `readOutageRecordsInTx`, by document id.
  */
 async function readOutageRecords(db, { fromDayKey, toDayKey, tx = null }) {
+  // A range QUERY is never read inside a transaction (Batch 9G): under
+  // contention the emulator kills it with a non-retryable "Transaction is
+  // invalid or closed". Transactions use `readOutageRecordsInTx`, which reads
+  // the same days by id. Refusing loudly keeps that from creeping back.
+  if (tx) {
+    throw new Error("readOutageRecords is non-transactional; use readOutageRecordsInTx inside a transaction.");
+  }
   if (!isValidDayKey(fromDayKey) || !isValidDayKey(toDayKey)) return [];
-  const query = db
+  const snap = await db
     .collection(SYSTEM_HEALTH_COLLECTION)
     .where("__name__", ">=", db.doc(systemHealthPath(fromDayKey)))
-    .where("__name__", "<=", db.doc(systemHealthPath(toDayKey)));
+    .where("__name__", "<=", db.doc(systemHealthPath(toDayKey)))
+    .get();
+  return snap.docs.map(outageRecordFrom);
+}
 
-  const snap = tx ? await tx.get(query) : await query.get();
-  return snap.docs.map((doc) => ({
+/**
+ * Longest range `readOutageRecordsInTx` will read day by day. Real windows are
+ * 16 days (18 for legacy commitments); anything near this is corrupt data.
+ */
+const MAX_OUTAGE_READ_DAYS = 366;
+
+/**
+ * `readOutageRecords` for use INSIDE a transaction: the same records, in the
+ * same order, read by document id instead of by range query.
+ *
+ * Every day in the range is point-read, INCLUDING days with no declaration.
+ * That is what keeps the outage race closed: a transaction's read of a missing
+ * document still conflicts with a later write creating it, so an outage
+ * declared - or cleared, or changed - mid-flight makes this transaction retry
+ * and decide again on the new state, exactly as the range query did. There is
+ * no discovery step to go stale: `systemHealth` ids ARE day keys (only
+ * `adminDeclareOutage` writes them), so the ids are known up front.
+ *
+ * Fails closed on a range too long to be a real window.
+ */
+async function readOutageRecordsInTx(tx, db, { fromDayKey, toDayKey }) {
+  if (!isValidDayKey(fromDayKey) || !isValidDayKey(toDayKey)) return [];
+  const days = dayKeyRange(fromDayKey, toDayKey, MAX_OUTAGE_READ_DAYS);
+  if (days === null) {
+    throw new HttpsError("failed-precondition", "This commitment's testing window is not readable.");
+  }
+  const snaps = await Promise.all(days.map((day) => tx.get(db.doc(systemHealthPath(day)))));
+  return snaps.filter((snap) => snap.exists).map(outageRecordFrom);
+}
+
+/** One outage record, shaped identically for the query and the point reads. */
+function outageRecordFrom(doc) {
+  return {
     // The id is authoritative for the day, not the stored field: they are
     // written together, but only one of them can be the document's identity.
     dayKey: doc.id,
@@ -70,7 +112,7 @@ async function readOutageRecords(db, { fromDayKey, toDayKey, tx = null }) {
     scope: doc.get("scope"),
     appId: doc.get("appId") || null,
     reason: doc.get("reason") || null,
-  }));
+  };
 }
 
 /**
@@ -162,5 +204,7 @@ module.exports = {
   adminDeclareOutageImpl,
   runDeclareOutage,
   readOutageRecords,
+  readOutageRecordsInTx,
   systemHealthPath,
+  MAX_OUTAGE_READ_DAYS,
 };
