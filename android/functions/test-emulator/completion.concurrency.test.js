@@ -26,6 +26,7 @@ const assert = require("node:assert/strict");
 
 const admin = require("firebase-admin");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
+const { configureFirestore } = require("../lib/firestore");
 
 const { verifyAssignmentCompletion } = require("../completion");
 
@@ -42,7 +43,9 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) {
 }
 
 admin.initializeApp({ projectId: PROJECT_ID });
-const db = getFirestore();
+// The production transport (lib/firestore.js), or these tests would not
+// exercise what production runs.
+const db = configureFirestore(getFirestore());
 
 // ---------------------------------------------------------------------------
 // Emulator helpers

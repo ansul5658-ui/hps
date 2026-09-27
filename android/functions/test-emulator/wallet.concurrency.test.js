@@ -24,6 +24,7 @@ const assert = require("node:assert/strict");
 
 const admin = require("firebase-admin");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
+const { configureFirestore } = require("../lib/firestore");
 
 const { adminGrantCoinsImpl, runWalletReconciliation } = require("../wallet");
 const { checkInvariants } = require("../lib/wallet");
@@ -43,7 +44,9 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) {
 }
 
 if (!admin.apps.length) admin.initializeApp({ projectId: PROJECT_ID });
-const db = getFirestore();
+// The production transport (lib/firestore.js), or these tests would not
+// exercise what production runs.
+const db = configureFirestore(getFirestore());
 
 // ---------------------------------------------------------------------------
 // Emulator helpers

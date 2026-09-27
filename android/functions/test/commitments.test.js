@@ -2335,13 +2335,21 @@ test("9G sweep: a sweep racing a cancellation settles the commitment exactly onc
   assert.equal(ledgerIds(db).length, 1);
 });
 
-// ---- a transaction killed as "invalid or closed" is retried, safely --------
+// ---- a killed transaction is never retried or swallowed by app code --------
+//
+// The emulator's "Transaction is invalid or closed" came from the SDK
+// transport re-sending a read into a transaction the server had already
+// aborted (see lib/firestore.js); it is fixed there, at its source. App code
+// no longer retries it, so if it ever reappears it must surface - as the
+// caller's error, or as a sweep failure - and never as a quiet success.
 
-/** Make the next `n` transactions fail as the emulator's killed transaction does. */
+/** Make the next `n` transactions fail as the emulator's killed transaction did. */
 function killNextTransactions(db, n) {
   const run = db.runTransaction.bind(db);
   let left = n;
+  db.calls = 0;
   db.runTransaction = (fn, ...rest) => {
+    db.calls += 1;
     if (left > 0) {
       left -= 1;
       return Promise.reject(Object.assign(new Error("3 INVALID_ARGUMENT: Transaction is invalid or closed."), { code: 3 }));
@@ -2351,39 +2359,106 @@ function killNextTransactions(db, n) {
   return db;
 }
 
-test("9G retry: a cancellation whose transaction was killed is retried and settles once", async () => {
-  const db = killNextTransactions(forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 }))), 2);
-  const out = await cancel(db);
-  assert.equal(out.cancelled, true);
-  assert.equal(db.__read(WALLET_PATH).available, 50);
-  assert.equal(db.__read("apps/app1").testerCount, 4);
-  assert.equal(ledgerIds(db).length, 1);
+/** Nothing moved: the wallet, the slot, the assignment and the ledger are as seeded. */
+function assertUntouched(db) {
+  assert.equal(db.__read(WALLET_PATH).available, 0);
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.equal(db.__read("apps/app1").testerCount, 5);
+  assert.equal(db.__read(C1_PATH).status, "inProgress");
+  assert.equal(db.__read(C1_PATH).capacityHeld, true);
+  assert.deepEqual(ledgerIds(db), []);
+}
+
+test("9G: a cancellation whose transaction was killed fails with that error, once, and moves nothing", async () => {
+  const db = killNextTransactions(forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 }))), 1);
+  await assert.rejects(cancel(db), (e) => e.code === 3 && /invalid or closed/.test(e.message));
+  assert.equal(db.calls, 1, "app code must not retry it");
+  assertUntouched(db);
 });
 
-test("9G retry: a forfeiture whose transaction was killed is retried and settles once", async () => {
-  const db = killNextTransactions(forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 }))), 2);
-  const out = await g9Forfeit(db, PAST_WINDOW);
-  assert.equal(out.forfeited, true);
-  assert.equal(db.__read(WALLET_PATH).forfeitedTotal, 50);
-  assert.equal(db.__read("apps/app1").testerCount, 4);
-  assert.equal(ledgerIds(db).length, 1);
+test("9G: a forfeiture whose transaction was killed fails with that error, once, and moves nothing", async () => {
+  const db = killNextTransactions(forbidQueriesInTransactions(fakeDb(g9World({ testerCount: 5 }))), 1);
+  await assert.rejects(g9Forfeit(db, PAST_WINDOW), (e) => e.code === 3);
+  assert.equal(db.calls, 1, "app code must not retry it");
+  assertUntouched(db);
 });
 
-test("9G retry: the sweep settles through a killed transaction and reports no failure", async () => {
+test("9G: the sweep reports a killed transaction as a failure, never as a skip or a success", async () => {
   const db = killNextTransactions(forbidQueriesInTransactions(fakeDb(g9SweepWorld({ testerCount: 5 }))), 1);
   const summary = await sweepAt(db);
-  assert.equal(summary.forfeitedCount, 1);
-  assert.equal(summary.failedCount, 0);
-  assert.equal(ledgerIds(db).length, 1);
+  assert.equal(summary.failedCount, 1);
+  assert.equal(summary.skippedCount, 0);
+  assert.equal(summary.forfeitedCount, 0);
+  assert.equal(summary.failed[0].code, 3);
+  assertUntouched(db);
 });
 
-test("9G sweep: a raw ALREADY_EXISTS (6) from the ledger backstop is a skip, not a failure", async () => {
-  const db = fakeDb(g9SweepWorld());
-  db.runTransaction = () =>
-    Promise.reject(Object.assign(new Error("6 ALREADY_EXISTS: entity already exists"), { code: 6 }));
+// ---- raw ALREADY_EXISTS: expected only on this assignment's own ledger id ---
+
+const { isExpectedSettlementRefusal } = require("../expiry");
+const FORFEIT_LEDGER = `users/${TESTER}/coinTransactions/forfeit_${C1}`;
+const rawGrpc = (code, message) => Object.assign(new Error(message), { code, details: message.replace(/^\d+ [A-Z_]+: /, "") });
+
+test("9G sweep: the real collision - a racer already wrote this forfeiture's ledger entry - is a skip, and nothing moves twice", async () => {
+  // The racing settlement's ledger entry is already there; this sweep's
+  // `tx.create` of the same deterministic id is refused by the store itself
+  // with raw gRPC 6, exactly as Firestore refuses it.
+  const seed = g9SweepWorld({ testerCount: 5 });
+  seed[FORFEIT_LEDGER] = { kind: "forfeit", amount: 50 };
+  const db = fakeDb(seed);
   const summary = await sweepAt(db);
   assert.equal(summary.skippedCount, 1);
   assert.equal(summary.failedCount, 0);
+  assert.equal(summary.skipped[0].code, 6);
+  // The refused attempt committed nothing.
+  assert.equal(db.__read(WALLET_PATH).locked, 50);
+  assert.equal(db.__read(WALLET_PATH).forfeitedTotal || 0, 0);
+  assert.equal(db.__read("apps/app1").testerCount, 5);
+});
+
+test("9G sweep: raw ALREADY_EXISTS is recognised in both the production and the emulator spelling", () => {
+  const prod = rawGrpc(6, `6 ALREADY_EXISTS: Document already exists: projects/p/databases/(default)/documents/${FORFEIT_LEDGER}`);
+  const emu = rawGrpc(6, `6 ALREADY_EXISTS: entity already exists: EntityRef{partitionRef=dev~p, path=/${FORFEIT_LEDGER}}`);
+  assert.equal(isExpectedSettlementRefusal(C1, prod), true);
+  assert.equal(isExpectedSettlementRefusal(C1, emu), true);
+});
+
+test("9G sweep: raw ALREADY_EXISTS on any other document, or naming none, is a failure", async () => {
+  const cases = [
+    rawGrpc(6, "6 ALREADY_EXISTS: entity already exists"),
+    rawGrpc(6, `6 ALREADY_EXISTS: Document already exists: projects/p/databases/(default)/documents/users/${TESTER}/coinTransactions/cancel_${C1}`),
+    rawGrpc(6, `6 ALREADY_EXISTS: Document already exists: projects/p/databases/(default)/documents/users/${TESTER}/coinTransactions/forfeit_${C1}x`),
+    rawGrpc(6, `6 ALREADY_EXISTS: Document already exists: projects/p/databases/(default)/documents/activeClaims/app1__${TESTER}`),
+  ];
+  for (const err of cases) {
+    assert.equal(isExpectedSettlementRefusal(C1, err), false, err.message);
+    const db = fakeDb(g9SweepWorld());
+    db.runTransaction = () => Promise.reject(err);
+    const summary = await sweepAt(db);
+    assert.equal(summary.failedCount, 1, err.message);
+    assert.equal(summary.skippedCount, 0, err.message);
+  }
+});
+
+test("9G sweep: Firestore's raw FAILED_PRECONDITION (9) and NOT_FOUND (5) are failures, not skips", async () => {
+  for (const err of [
+    rawGrpc(9, "9 FAILED_PRECONDITION: The query requires an index."),
+    rawGrpc(5, `5 NOT_FOUND: no entity to update: ${C1_PATH}`),
+  ]) {
+    assert.equal(isExpectedSettlementRefusal(C1, err), false);
+    const db = fakeDb(g9SweepWorld());
+    db.runTransaction = () => Promise.reject(err);
+    const summary = await sweepAt(db);
+    assert.equal(summary.failedCount, 1, err.message);
+    assert.equal(summary.skippedCount, 0, err.message);
+  }
+});
+
+test("9G sweep: the deliberate refusals are still skips", () => {
+  for (const code of ["failed-precondition", "already-exists", "not-found"]) {
+    assert.equal(isExpectedSettlementRefusal(C1, Object.assign(new Error("refused"), { code })), true, code);
+  }
+  assert.equal(isExpectedSettlementRefusal(C1, null), false);
 });
 
 test("9G sweep: a genuinely unexpected error is still reported as a failure", async () => {

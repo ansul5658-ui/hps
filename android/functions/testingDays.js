@@ -42,7 +42,6 @@ const {
   nextCheckInAtMillis,
 } = require("./lib/testingDays");
 const { stageUnlockSettlement, assignmentPath } = require("./commitments");
-const { runSettlementTransaction } = require("./lib/transactions");
 const { readOutageRecordsInTx } = require("./systemHealth");
 const { effectiveLastEligibleDayKey, applicableOutageDayKeys } = require("./lib/outages");
 const {
@@ -92,7 +91,7 @@ async function runRecordTestingDay(db, { assignmentId, testerId, nowMillis = Dat
   const assignmentRef = db.doc(assignmentPath(assignmentId));
   const userRef = db.doc(`users/${testerId}`);
 
-  return runSettlementTransaction(db, async (tx) => {
+  return db.runTransaction(async (tx) => {
     // ---- reads: all of them, before any write ------------------------
     const [assignmentSnap, userSnap] = await Promise.all([
       tx.get(assignmentRef),

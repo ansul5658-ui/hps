@@ -36,42 +36,78 @@ firebase-admin 13.10.0, @google-cloud/firestore 7.11.6 and @grpc/grpc-js
 `~/.cache/firebase/emulators` and deletes the other one, so check which jar a
 run actually started (firebase-tools prints it when it downloads one).
 
-### The difference: "Transaction is invalid or closed"
+### "Transaction is invalid or closed": root cause and fix
 
-On **1.19.8**, when several settlements (sweeps, forfeitures, cancellations)
-race for one commitment, a losing transaction's point read can block on a lock
-for roughly 9-12 s and then fail with
-`3 INVALID_ARGUMENT: Transaction is invalid or closed.` The Admin SDK treats
-that code as permanent and does not retry it, so without the 9G retry
-(`functions/lib/transactions.js`) the sweep logs "expiry sweep could not
-settle". Nothing has committed when this happens.
+The code-3 error that 9G's race tests hit on **1.19.8** was not emulator
+flakiness. It was a client transport bug, now fixed in
+`functions/lib/firestore.js`:
 
-On **1.22.0** the same contention is reported as
-`10 ABORTED: Transaction lock timeout.` at commit, which the SDK retries on its
-own. Code 3 never appeared there in the validated run.
+1. A transactional read waits more than 2 s for a lock held by a committing
+   transaction. The emulator's lock manager then **closes that transaction**
+   and answers the read `10 ABORTED: Transaction lock timeout.`, which
+   `runTransaction` would normally retry with a fresh transaction.
+2. By default the Admin SDK's streamed reads (BatchGetDocuments, RunQuery,
+   RunAggregationQuery) sit on google-gax's legacy `retry-request` layer, which
+   silently **re-sends** a stream that fails before its first response,
+   whatever the error code. The ABORTED is swallowed, and the read goes back on
+   the wire still carrying the closed transaction's id.
+3. The server's answer to that re-send is what the caller sees. **1.19.8**
+   answers `3 INVALID_ARGUMENT: Transaction is invalid or closed.`, which is
+   final, so the settlement failed ("expiry sweep could not settle").
+   **1.22.0** (like production) answers `10 ABORTED: The referenced transaction
+   has expired or is no longer valid.`, which is retried. That masks the same
+   re-send; it does not remove it.
 
-Validated over the five settlement files (cancellation, expiry, misses and
-testingDays concurrency, plus progress; 109 tests):
+The fix sets `gaxServerStreamingRetries` with no transport-level retry codes for
+those three methods, so the transport never re-sends a streamed read on its
+own. Every error reaches the SDK once, with its real code, and the SDK's own
+layers keep their existing retries (`runTransaction` on ABORTED, restarting a
+stream that failed transiently before opening, resuming a query from its
+cursor). Nothing is retried more than before; only the blind re-send is gone.
+The earlier 9G app-level retry of code 3 (`lib/transactions.js`) has been
+**removed**. It treated the symptom, and it would have hidden a regression.
 
-| Emulator | 9G retry | Result | Code-3 attempts |
-|---|---|---|---|
-| 1.19.8 | on | 109/109 | 9, all recovered by the retry |
-| 1.19.8 | off | 108/109 (the 9G race test fails) | 16, all surfaced |
-| 1.22.0 | on | 109/109 | 0 |
+`configureFirestore` must run before a Firestore instance is first used:
+`index.js` applies it at startup, and **every emulator test file applies it
+too**, so the tests exercise the production transport.
+`test/firestore.test.js` enforces both structurally, and checks on the real
+SDK that the settings reach the GAPIC client.
 
-Only the "9G:" race tests in `expiry.concurrency.test.js` assert that no
-sweep reported a failed settlement. The older race tests check only the final
-money and state, so they pass even when a sweep logged code 3.
+### Regression tests for it
 
-**This is emulator behaviour observed during testing. It has not been
-identified as a production Firestore bug.** The retry stays because it is
-narrow (only that code and message, bounded) and safe (the failed attempt
-committed nothing, and every settlement is idempotent).
+The failure is reproduced **deterministically** rather than about one round in
+ten. `lockStarvation.js` builds a chain of committers that each hold the
+contended document exclusively for 2 s, so a younger transaction's read of it
+is starved past its own 2 s every time. Reads are counted on the wire, at the
+gRPC stub (below gax, where the re-send happens).
 
-### Reproducing the 1.19.8 behaviour
+- `transport.emulator.test.js`, on a raw SDK transaction:
+  - **production transport:** the starved read is sent exactly once per
+    transaction; the first error is the real `ABORTED: Transaction lock
+    timeout`; `runTransaction` commits on attempt 2;
+  - **default transport (control):** the same read goes on the wire 3 times
+    into one transaction. On 1.19.8 the transaction is lost with code 3; on
+    1.22.0 it recovers after the masked "expired" error.
+- `expiry.concurrency.test.js`, "a forfeiture whose apps/{appId} read is
+  starved of its lock": the real `runForfeitCommitment` read of `apps/{appId}`
+  (the read that failed in the captured trace) is starved; the forfeiture must
+  settle exactly once, release capacity once, and never see code 3. With the
+  old transport this test fails on both emulators (code 3 on 1.19.8, the
+  masked error on 1.22.0).
 
-1.22.0 will not show it, so run the 1.19.8 jar directly on Java 17. Download
-it once from
+Both pass on 1.19.8 and on 1.22.0.
+
+The "9G:" race tests also accept a losing settlement only if it has a
+deliberate refusal code, or a raw `6 ALREADY_EXISTS` naming C1's own
+deterministic ledger entry (the exactly-once backstop, classified exactly as
+the sweep's `isExpectedSettlementRefusal` does). Any other raw Firestore code,
+including code 3, fails them. The older race tests still check only the final
+money and state.
+
+### Running on 1.19.8
+
+firebase-tools 15.x uses 1.22.0, so to cover both, also run the 1.19.8 jar
+directly on Java 17. Download it once from
 `https://storage.googleapis.com/firebase-preview-drop/emulator/cloud-firestore-emulator-v1.19.8.jar`,
 then:
 
@@ -81,9 +117,4 @@ then:
 
     # terminal 2, from functions/
     FIRESTORE_EMULATOR_HOST=127.0.0.1:8081 \
-      node --test --test-concurrency=1 test-emulator/expiry.concurrency.test.js
-
-With the 9G retry in place this passes. To see the raw failure, the retry has
-to be disabled: `runSettlementTransaction` accepts `{ retries: 0 }`. The 9G
-race test failed in both validated runs, but it is a race, so a single clean
-run proves nothing.
+      node --test --test-concurrency=1 "test-emulator/*.test.js"

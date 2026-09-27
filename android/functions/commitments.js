@@ -99,7 +99,6 @@ const { checkCommitmentExpiry } = require("./lib/expiry");
 const { missRuleApplies, readMissEvidence, removalCheckAtMillis } = require("./lib/misses");
 const { readOutageRecordsInTx } = require("./systemHealth");
 const { readWalletForUpdate, stageWalletEntry } = require("./wallet");
-const { runSettlementTransaction } = require("./lib/transactions");
 const { requireAuth, requireAdmin, requireDocId } = require("./lib/guards");
 
 function claimPath(appId, testerId) {
@@ -703,7 +702,7 @@ async function runForfeitCommitment(
   // `countQualifyingDays` for why a list taken now cannot go stale.
   const locatedLogRefs = await locateLogRefs(db, assignmentId);
 
-  return runSettlementTransaction(db, async (tx) => {
+  return db.runTransaction(async (tx) => {
     const assignmentSnap = await tx.get(assignmentRef);
     if (!assignmentSnap.exists) {
       throw new HttpsError("not-found", "That assignment no longer exists.");
@@ -933,7 +932,7 @@ async function runCancelCommitment(
   // `countQualifyingDays` for why a list taken now cannot go stale.
   const locatedLogRefs = await locateLogRefs(db, assignmentId);
 
-  return runSettlementTransaction(db, async (tx) => {
+  return db.runTransaction(async (tx) => {
     const assignmentSnap = await tx.get(assignmentRef);
     if (!assignmentSnap.exists) {
       throw new HttpsError("not-found", "That assignment no longer exists.");

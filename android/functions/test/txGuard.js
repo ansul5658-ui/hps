@@ -2,9 +2,11 @@
  * Structural guard for the test fakes (Batch 9G): no QUERY read while a
  * transaction callback is running.
  *
- * Under contention the emulator kills a transaction mid-query with
- * "Transaction is invalid or closed" (INVALID_ARGUMENT), which the SDK does not
- * retry. Settlement transactions therefore read by document id only. This
+ * Settlement transactions read by document id only: a query inside one locks a
+ * range whose extent depends on the data, and was the first place 9F saw
+ * "Transaction is invalid or closed" under contention (whose root cause, a
+ * transport re-send into a closed transaction, is fixed in lib/firestore.js).
+ * Point reads keep every transaction's lock set small and deterministic. This
  * wrapper makes a regression fail loudly and deterministically, whichever way
  * it creeps back in:
  *   * `tx.get(query)` or `tx.get(query.count())` - a transactional query;

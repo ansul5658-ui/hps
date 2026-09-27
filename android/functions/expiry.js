@@ -47,6 +47,7 @@ const {
   ACTOR_KIND_SYSTEM,
   ACTOR_KIND_ADMIN,
 } = require("./lib/constants");
+const { forfeitEntryId } = require("./lib/commitments");
 const { checkCommitmentExpiry, couldBeExpired } = require("./lib/expiry");
 const { readMissEvidence } = require("./lib/misses");
 const { runForfeitCommitment } = require("./commitments");
@@ -202,11 +203,45 @@ async function findExpiryCandidates(db, { nowMillis, limit = EXPIRY_SWEEP_LIMIT 
   return [...new Set([...windowIds, ...removalIds])].slice(0, limit);
 }
 
+/** The refusals `runForfeitCommitment` throws on purpose, as HttpsError codes. */
+const REFUSAL_CODES = new Set(["failed-precondition", "already-exists", "not-found"]);
+
+/** gRPC ALREADY_EXISTS, as Firestore itself reports it (a number, not a string). */
+const GRPC_ALREADY_EXISTS = 6;
+
 /**
- * Refusals the sweep records as skips: the HttpsError spellings, and the raw
- * gRPC numbers Firestore uses for the same three (9, 6, 5).
+ * Is [err] a settlement the sweep should record as a skip rather than a
+ * failure?
+ *
+ * Deliberate refusals, yes. From Firestore itself exactly one error is also
+ * an expected outcome: raw ALREADY_EXISTS on THIS assignment's forfeiture
+ * ledger entry. Its id is deterministic and written with `tx.create`, so a
+ * collision there means a racing settlement already forfeited this very
+ * commitment and this attempt committed nothing - the exactly-once backstop
+ * doing its job. The error names the document ("Document already exists:
+ * .../coinTransactions/forfeit_<id>" in production, "entity already exists:
+ * EntityRef{..., path=/.../coinTransactions/forfeit_<id>}" on the emulator),
+ * and the name is required: an ALREADY_EXISTS on any other document, or one
+ * that names nothing, is not proven harmless and is reported as a failure.
+ * Nor are Firestore's own raw FAILED_PRECONDITION (9) or NOT_FOUND (5) ever
+ * skips - a missing index or a vanished document is a real failure, whatever
+ * the HttpsError refusals with similar names mean.
  */
-const SKIP_CODES = new Set(["failed-precondition", "already-exists", "not-found", 9, 6, 5]);
+function isExpectedSettlementRefusal(assignmentId, err) {
+  if (!err) return false;
+  if (REFUSAL_CODES.has(err.code)) return true;
+  if (err.code !== GRPC_ALREADY_EXISTS) return false;
+  const ledgerDoc = `/coinTransactions/${forfeitEntryId(assignmentId)}`;
+  const text = `${err.details || ""} ${err.message || ""}`;
+  let at = text.indexOf(ledgerDoc);
+  while (at !== -1) {
+    // The id must end there: `forfeit_a1` is not `forfeit_a10`.
+    const next = text.charAt(at + ledgerDoc.length);
+    if (!/[A-Za-z0-9_-]/.test(next)) return true;
+    at = text.indexOf(ledgerDoc, at + 1);
+  }
+  return false;
+}
 
 /**
  * Everything worth logging about a settlement the sweep could not complete:
@@ -282,11 +317,10 @@ async function runExpirySweep(
       // errors, so they are recorded and the sweep moves on.
       const code = err && err.code ? err.code : "internal";
       const entry = { assignmentId, code, message: err && err.message };
-      // The same three refusals can also arrive as raw gRPC numbers from
-      // Firestore itself - chiefly 6 (ALREADY_EXISTS) when a racing sweep's
-      // commit collides on the deterministic ledger id: the idempotency
-      // backstop doing its job, not a settlement that failed (Batch 9G).
-      if (SKIP_CODES.has(code)) {
+      // Including a racing settlement's commit colliding on this
+      // assignment's deterministic ledger id - see
+      // `isExpectedSettlementRefusal` for exactly what qualifies.
+      if (isExpectedSettlementRefusal(assignmentId, err)) {
         skipped.push(entry);
       } else {
         failed.push(entry);
@@ -393,6 +427,7 @@ module.exports = {
   adminRunExpirySweepImpl,
   evaluateAssignmentExpiry,
   findExpiryCandidates,
+  isExpectedSettlementRefusal,
   runExpirySweep,
   SYSTEM_ACTOR_ID,
 };

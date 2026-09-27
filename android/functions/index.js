@@ -12,10 +12,15 @@
  */
 
 const admin = require("firebase-admin");
+const { getFirestore } = require("firebase-admin/firestore");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { REGION } = require("./lib/constants");
+const { configureFirestore } = require("./lib/firestore");
 
 admin.initializeApp();
+// Before anything can use it: see lib/firestore.js for why the transport
+// must never re-send a transactional read on its own.
+configureFirestore(getFirestore());
 setGlobalOptions({ region: REGION });
 
 const adminOps = require("./admin");

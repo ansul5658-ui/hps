@@ -29,6 +29,7 @@ const { readyAppDoc, joinReadyDocs } = require("../test/joinReady");
 
 const admin = require("firebase-admin");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
+const { configureFirestore } = require("../lib/firestore");
 
 const { runForfeitCommitment } = require("../commitments");
 const { runRecordTestingDay } = require("../testingDays");
@@ -77,7 +78,9 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) {
 }
 
 if (!admin.apps.length) admin.initializeApp({ projectId: PROJECT_ID });
-const db = getFirestore();
+// The production transport (lib/firestore.js), or these tests would not
+// exercise what production runs.
+const db = configureFirestore(getFirestore());
 
 async function clearFirestore() {
   const url =
@@ -792,9 +795,12 @@ test("F: the forfeited cycle's ledger entry is immutable", async () => {
 // 9G. Settlements under contention: no "Transaction is invalid or closed"
 //
 // Batch 9F's full run logged "expiry sweep could not settle ... Transaction is
-// invalid or closed" from racing sweeps: the settlement transaction ran range
-// and count QUERIES, and the emulator kills a contended transaction mid-query
-// with a non-retryable INVALID_ARGUMENT. Settlements now read by id only.
+// invalid or closed" from racing sweeps. The cause turned out to be the SDK
+// transport re-sending a lock-starved read into its already-closed transaction
+// (fixed in lib/firestore.js; reproduced deterministically at the end of this
+// file and in transport.emulator.test.js). Settlement transactions also read by
+// document id only - queries only locate ids, outside the transaction - which
+// keeps each transaction's lock set small and deterministic.
 //
 // These rounds assert the symptom is gone - no sweep reports a failed
 // settlement, and every losing direct call is refused with a business code -
@@ -809,8 +815,35 @@ const { Firestore, Transaction, Query } = require("firebase-admin/firestore");
 const AggregateQuery = Object.getPrototypeOf(getFirestore().collection("x").count()).constructor;
 const { runCancelCommitment } = require("../commitments");
 
-/** Business refusals a losing settlement may legitimately see. */
-const BUSINESS_CODES = new Set(["failed-precondition", "already-exists", "not-found", 6, 9]);
+const { cancelEntryId } = require("../lib/commitments");
+const { isExpectedSettlementRefusal } = require("../expiry");
+const { recordTransactionalReads, startLockStarvation } = require("./lockStarvation");
+
+/** The deliberate refusals a losing settlement throws, as HttpsError codes. */
+const BUSINESS_CODES = new Set(["failed-precondition", "already-exists", "not-found"]);
+
+/** Does [err]'s text name exactly [docSuffix] (not a longer id that starts with it)? */
+function namesDocument(err, docSuffix) {
+  const text = `${err.details || ""} ${err.message || ""}`;
+  for (let at = text.indexOf(docSuffix); at !== -1; at = text.indexOf(docSuffix, at + 1)) {
+    if (!/[A-Za-z0-9_-]/.test(text.charAt(at + docSuffix.length))) return true;
+  }
+  return false;
+}
+
+/**
+ * Is [err] a legitimate way to lose a settlement race on C1? A deliberate
+ * refusal, or Firestore's raw ALREADY_EXISTS (6) on C1's OWN deterministic
+ * settlement ledger entry - forfeiture exactly as the sweep classifies it
+ * (`isExpectedSettlementRefusal`), cancellation by the same rule. Any other
+ * raw Firestore code - a 6 on another document, a 9, a 3 - is a failure.
+ */
+function isLegitimateLoss(err) {
+  if (!err) return false;
+  if (BUSINESS_CODES.has(err.code)) return true;
+  if (isExpectedSettlementRefusal(C1, err)) return true;
+  return err.code === 6 && namesDocument(err, `/coinTransactions/${cancelEntryId(C1)}`);
+}
 
 function installRealSdkQueryGuard() {
   const inside = new AsyncLocalStorage();
@@ -857,7 +890,7 @@ function assertBusinessRefusals(rejected, label) {
   for (const r of rejected) {
     const reason = r.reason || {};
     assert.ok(
-      BUSINESS_CODES.has(reason.code),
+      isLegitimateLoss(reason),
       `${label}: a loser got a non-business error (${reason.code}): ${reason.message}`,
     );
     assert.doesNotMatch(String(reason.message), /invalid or closed/, label);
@@ -920,4 +953,107 @@ test("9G: racing cancellations and a sweep settle once, with no failed settlemen
     assert.equal(state.wallet.locked, 0, label);
     assertExactlyOneTerminalOutcome(state, label);
   }
+});
+
+test("9G: isLegitimateLoss accepts only the deliberate refusals and C1's own ledger collision", () => {
+  const raw = (code, message) => Object.assign(new Error(message), { code, details: message });
+  const docs = "projects/p/databases/(default)/documents";
+  assert.equal(isLegitimateLoss(raw("failed-precondition", "settled")), true);
+  assert.equal(isLegitimateLoss(raw(6, `Document already exists: ${docs}/${ledgerPath(forfeitEntryId(C1))}`)), true);
+  assert.equal(isLegitimateLoss(raw(6, `entity already exists: EntityRef{path=/${ledgerPath(cancelEntryId(C1))}}`)), true);
+  assert.equal(isLegitimateLoss(raw(6, "entity already exists")), false, "a 6 naming nothing");
+  assert.equal(isLegitimateLoss(raw(6, `Document already exists: ${docs}/${ledgerPath(forfeitEntryId(C1))}x`)), false);
+  assert.equal(isLegitimateLoss(raw(6, `Document already exists: ${docs}/${claimPath()}`)), false);
+  assert.equal(isLegitimateLoss(raw(9, "FAILED_PRECONDITION: The query requires an index.")), false);
+  assert.equal(isLegitimateLoss(raw(3, "INVALID_ARGUMENT: Transaction is invalid or closed.")), false);
+  assert.equal(isLegitimateLoss(raw(10, "ABORTED: too much contention")), false);
+});
+
+// ---------------------------------------------------------------------------
+// 9G root cause, on the real settlement path: the forfeiture's transactional
+// read of apps/{appId} (`readCapacityRelease`) is starved of its lock - the
+// read that failed in the captured code-3 trace - deterministically, via
+// lockStarvation.js. On the SDK's default transport this read was re-sent into
+// its closed transaction and, on emulator v1.19.8, the forfeiture failed with
+// "3 INVALID_ARGUMENT: Transaction is invalid or closed". On the production
+// transport the read is sent once, fails ABORTED, and runTransaction settles
+// the commitment on a fresh transaction - exactly once.
+// ---------------------------------------------------------------------------
+
+test("9G: a forfeiture whose apps/{appId} read is starved of its lock still settles exactly once", async () => {
+  await seedCommitment({ done: 2 });
+  const appPath = `apps/${APP}`;
+  assert.equal((await db.doc(appPath).get()).get("testerCount"), 1);
+
+  // Every transactional read's outcome, per document, on the real SDK.
+  const txGet = Transaction.prototype.get;
+  const reads = [];
+  Transaction.prototype.get = function (target, ...rest) {
+    const p = txGet.call(this, target, ...rest);
+    const path = target && target.path;
+    p.then(
+      () => reads.push({ path, code: "ok" }),
+      (err) => reads.push({ path, code: err.code, message: err.message }),
+    );
+    return p;
+  };
+
+  const wire = await recordTransactionalReads(db, appPath);
+  let outcome;
+  let committers;
+  try {
+    // The app document is the contended one; "zz..." sorts after it.
+    const chain = await startLockStarvation(db, { contendedPath: appPath, heldPath: "zzLockHold/held" });
+    await chain.at(chain.victimStartMs);
+    outcome = await runForfeitCommitment(db, {
+      assignmentId: C1,
+      actorId: "system",
+      actorKind: "system",
+      nowMillis: boundary(),
+    }).then(
+      (value) => ({ ok: true, value }),
+      (err) => ({ ok: false, code: err.code, message: err.message }),
+    );
+    committers = await chain.done();
+  } finally {
+    wire.stop();
+    Transaction.prototype.get = txGet;
+  }
+
+  // The starvation really happened, on the app read.
+  assert.deepEqual(committers, [10, 10, 10, 10], "every committer timed out holding the app document");
+  const appReads = reads.filter((r) => r.path === appPath);
+  assert.equal(appReads[0] && appReads[0].code, 10, `first app read: ${JSON.stringify(appReads[0])}`);
+  assert.match(appReads[0].message, /lock timeout/i);
+  assert.equal(appReads[appReads.length - 1].code, "ok", "the retried transaction read it");
+
+  // Never re-sent into the closed transaction; no code 3 anywhere.
+  const sends = [...wire.sends.values()];
+  assert.ok(sends.length >= 2, `one app read per transaction attempt: ${sends}`);
+  assert.deepEqual(sends.filter((n) => n !== 1), [], `re-sent app reads: ${sends}`);
+  assert.ok(wire.sawEveryClient());
+  assert.deepEqual(reads.filter((r) => r.code === 3), []);
+  assert.deepEqual(wire.errors.filter((e) => e.code === 3), []);
+
+  // Settled once, the slot released once, the stake consumed once.
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(outcome.value.forfeited, true);
+  const state = await observe();
+  assert.equal(state.wallet.forfeitedTotal, 50);
+  assertExactlyOneTerminalOutcome(state);
+  const app = await db.doc(appPath).get();
+  assert.equal(app.get("testerCount"), 0, "capacity released exactly once");
+  assert.equal(app.get("starvedBy"), undefined, "the lock chain never committed");
+  assert.equal((await db.doc(assignmentPath()).get()).get("capacityHeld"), false);
+
+  // A second forfeiture - and a sweep - now refuse cleanly: nothing moves twice.
+  await assert.rejects(
+    runForfeitCommitment(db, { assignmentId: C1, actorId: "system", actorKind: "system", nowMillis: boundary() }),
+    (err) => err.code === "failed-precondition",
+  );
+  const summary = await runExpirySweep(db, { nowMillis: boundary() });
+  assert.equal(summary.failedCount, 0);
+  assert.equal(summary.forfeitedCount, 0);
+  assert.equal((await db.doc(appPath).get()).get("testerCount"), 0);
+  assert.equal((await observe()).wallet.forfeitedTotal, 50);
 });

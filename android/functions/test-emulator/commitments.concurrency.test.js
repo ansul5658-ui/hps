@@ -25,6 +25,7 @@ const { readyAppDoc, joinReadyDocs } = require("../test/joinReady");
 
 const admin = require("firebase-admin");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
+const { configureFirestore } = require("../lib/firestore");
 
 const {
   runClaimCommitment,
@@ -64,7 +65,9 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) {
 }
 
 if (!admin.apps.length) admin.initializeApp({ projectId: PROJECT_ID });
-const db = getFirestore();
+// The production transport (lib/firestore.js), or these tests would not
+// exercise what production runs.
+const db = configureFirestore(getFirestore());
 
 // ---------------------------------------------------------------------------
 // Emulator helpers

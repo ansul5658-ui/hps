@@ -279,7 +279,7 @@ internal object FeedbackInput {
      */
     private fun isJsWhitespace(c: Char): Boolean =
         c == '\t' || c == '\n' || c == '\u000B' || c == '\u000C' || c == '\r' || c == ' ' ||
-            c == ' ' || c == '﻿' || c == ' ' || c == ' ' ||
+            c == ' ' || c == '\uFEFF' || c == ' ' || c == ' ' ||
             Character.getType(c) == Character.SPACE_SEPARATOR.toInt()
 }
 
