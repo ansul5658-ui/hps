@@ -698,6 +698,76 @@ test("the server-maintained member mirror is not client-writable", async () => {
   );
 });
 
+// ---- Groups Phase 1 (G1): membership and mirror edge cases -----------------
+// The seed gives alice a membership of g1; these add the mirror rows the
+// sync trigger would have written, so the mirror's read rules are exercised
+// against real documents.
+
+async function seedMirror() {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, "groups/g1/members/alice"), { userId: "alice", groupId: "g1" });
+    await setDoc(doc(db, "users/bob/memberships/g1"), { groupId: "g1", userId: "bob" });
+    await setDoc(doc(db, "groups/g1/members/bob"), { userId: "bob", groupId: "g1" });
+  });
+}
+
+test("groups: a user cannot delete another user's membership", async () => {
+  await assertFails(deleteDoc(doc(asUser("bob"), "users/alice/memberships/g1")));
+  await assertFails(deleteDoc(doc(asUser("admin1"), "users/alice/memberships/g1")));
+});
+
+test("groups: a user cannot update their own membership", async () => {
+  const ref = doc(asUser("alice"), "users/alice/memberships/g1");
+  await assertFails(updateDoc(ref, { groupId: "g2" }));
+  await assertFails(updateDoc(ref, { joinedAt: serverTimestamp() }));
+  await assertFails(setDoc(ref, { groupId: "g1", userId: "alice", joinedAt: serverTimestamp() }));
+});
+
+test("groups: a user cannot update another user's membership", async () => {
+  await assertFails(updateDoc(doc(asUser("bob"), "users/alice/memberships/g1"), { groupId: "g2" }));
+  await assertFails(updateDoc(doc(asUser("admin1"), "users/alice/memberships/g1"), { groupId: "g2" }));
+});
+
+test("groups: a user cannot read another user's membership", async () => {
+  await assertFails(getDoc(doc(asUser("bob"), "users/alice/memberships/g1")));
+  await assertFails(getDocs(collection(asUser("bob"), "users/alice/memberships")));
+  await assertFails(getDoc(doc(asAnon(), "users/alice/memberships/g1")));
+});
+
+test("groups: a user cannot read another user's mirror row, or list the mirror", async () => {
+  await seedMirror();
+  await assertFails(getDoc(doc(asUser("bob"), "groups/g1/members/alice")));
+  await assertFails(getDocs(collection(asUser("bob"), "groups/g1/members")));
+  await assertFails(getDoc(doc(asAnon(), "groups/g1/members/alice")));
+});
+
+test("groups: legitimate reads still work - own membership, own mirror row, and admin reads of both", async () => {
+  await seedMirror();
+  await assertSucceeds(getDoc(doc(asUser("alice"), "users/alice/memberships/g1")));
+  await assertSucceeds(getDocs(collection(asUser("alice"), "users/alice/memberships")));
+  await assertSucceeds(getDoc(doc(asUser("alice"), "groups/g1/members/alice")));
+  await assertSucceeds(getDoc(doc(asUser("admin1"), "users/alice/memberships/g1")));
+  await assertSucceeds(getDoc(doc(asUser("admin1"), "groups/g1/members/alice")));
+  await assertSucceeds(getDocs(collection(asUser("admin1"), "groups/g1/members")));
+});
+
+test("groups: a legitimate self-delete removes the membership and leaves others' intact", async () => {
+  await seedMirror();
+  await assertSucceeds(deleteDoc(doc(asUser("alice"), "users/alice/memberships/g1")));
+  const snap = await getDoc(doc(asUser("alice"), "users/alice/memberships/g1"));
+  assert.equal(snap.exists(), false);
+  await assertSucceeds(getDoc(doc(asUser("bob"), "users/bob/memberships/g1")));
+  assert.equal((await getDoc(doc(asUser("bob"), "users/bob/memberships/g1"))).exists(), true);
+});
+
+test("groups: a suspended user can still leave (self-delete is not gated on suspension)", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "users/banned/memberships/g1"), { groupId: "g1", userId: "banned" });
+  });
+  await assertSucceeds(deleteDoc(doc(asUser("banned"), "users/banned/memberships/g1")));
+});
+
 // ---------------------------------------------------------------------------
 // Ledger + catch-all
 // ---------------------------------------------------------------------------
