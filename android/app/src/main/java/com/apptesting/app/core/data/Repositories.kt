@@ -28,6 +28,20 @@ import kotlinx.coroutines.flow.Flow
 interface UserRepository {
     val currentUser: Flow<User?>
     suspend fun signOut()
+
+    /**
+     * The Terms version the signed-in user has accepted, read from their
+     * profile (not from the [currentUser] stream, whose first emission carries
+     * auth identity only). Null when nothing is accepted, nobody is signed in,
+     * or the profile cannot be read - the caller then shows the Terms screen.
+     */
+    suspend fun acceptedTermsVersion(): Int?
+
+    /**
+     * Records acceptance of [version] through the server, which alone writes
+     * the acceptance fields and stamps them with its own clock.
+     */
+    suspend fun acceptTerms(version: Int): Result<Unit>
 }
 
 /**

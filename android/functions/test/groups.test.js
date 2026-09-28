@@ -157,7 +157,8 @@ firestoreModule.getFirestore = () => fake.db;
 // Loaded only now, so they capture the fake.
 const { joinGroup, syncGroupMemberCount, ensureOfficialGroup } = require("../groups");
 const { adminUpsertGroup } = require("../admin");
-const { OFFICIAL_GROUP_ID, OFFICIAL_GROUP_NAME, OFFICIAL_GROUP_EMAIL } = require("../lib/constants");
+const { OFFICIAL_GROUP_ID, OFFICIAL_GROUP_NAME, OFFICIAL_GROUP_EMAIL, TERMS_VERSION } = require("../lib/constants");
+const { TERMS_ACCEPTED } = require("./joinReady");
 
 const ADMIN = "admin1";
 const USER = "user1";
@@ -178,7 +179,8 @@ async function codeOf(promise) {
   return "resolved";
 }
 
-function world({ group = { status: "open", memberCap: 0 }, user = { uid: USER } } = {}) {
+// The default user is a real signed-in member, so has accepted the Terms (F2).
+function world({ group = { status: "open", memberCap: 0 }, user = { uid: USER, ...TERMS_ACCEPTED } } = {}) {
   fake.reset();
   fake.seed(`users/${ADMIN}`, { uid: ADMIN, role: "admin" });
   if (user) fake.seed(`users/${USER}`, user);
@@ -307,9 +309,42 @@ test("joinGroup: a suspended user who is ALREADY a member is refused, not report
   assert.equal(fake.store.has(membershipPath(USER, G)), true, "the existing membership is not removed");
 });
 
-test("joinGroup: a caller with no profile document is treated as active and may join", async () => {
+// ---- Terms acceptance (release audit F2) -----------------------------------
+
+async function refusalOf(promise) {
+  try {
+    await promise;
+  } catch (err) {
+    return { code: err.code, reason: err.details && err.details.reason };
+  }
+  return "resolved";
+}
+
+test("joinGroup: a caller with no profile document has accepted no Terms, and is refused", async () => {
+  // Was "treated as active and may join" before F2: a missing profile is still
+  // not a suspension, but it carries no Terms acceptance.
   world({ user: null });
-  assert.equal((await join(USER, G)).joined, true);
+  assert.deepEqual(await refusalOf(join(USER, G)), { code: "failed-precondition", reason: "termsNotAccepted" });
+  assert.deepEqual(fake.writesOf(), []);
+});
+
+test("joinGroup: F2 - a member who has not accepted the Terms is refused and nothing is written", async () => {
+  world({ user: { uid: USER } });
+  assert.deepEqual(await refusalOf(join(USER, G)), { code: "failed-precondition", reason: "termsNotAccepted" });
+  assert.deepEqual(fake.writesOf(), []);
+});
+
+test("joinGroup: F2 - acceptance of an OLDER Terms version is refused", async () => {
+  world({ user: { uid: USER, termsAcceptedVersion: TERMS_VERSION - 1, termsAcceptedAt: new Date(0) } });
+  assert.deepEqual(await refusalOf(join(USER, G)), { code: "failed-precondition", reason: "termsNotAccepted" });
+  assert.deepEqual(fake.writesOf(), []);
+});
+
+test("joinGroup: F2 - an existing member is still reported as a member, whatever their Terms state", async () => {
+  world({ user: { uid: USER } });
+  fake.seed(membershipPath(USER, G), { groupId: G, userId: USER });
+  assert.deepEqual(await join(USER, G), { groupId: G, joined: false, alreadyMember: true });
+  assert.deepEqual(fake.writesOf(), []);
 });
 
 // ---- member cap: counted from the MIRROR, outside any transaction ---------

@@ -100,6 +100,7 @@ const { missRuleApplies, readMissEvidence, removalCheckAtMillis } = require("./l
 const { readOutageRecordsInTx } = require("./systemHealth");
 const { readWalletForUpdate, stageWalletEntry } = require("./wallet");
 const { requireAuth, requireAdmin, requireDocId } = require("./lib/guards");
+const { requireTermsAccepted } = require("./lib/terms");
 
 function claimPath(appId, testerId) {
   return `${ACTIVE_CLAIMS_COLLECTION}/${activeClaimId(appId, testerId)}`;
@@ -398,6 +399,9 @@ async function runClaimCommitment(db, { appId, testerId, requestedTimeZone }) {
     if (!userSnap.exists) {
       throw new HttpsError("failed-precondition", "You need a profile before testing.");
     }
+    // A commitment stakes coins under the Terms, so it needs consent to the
+    // CURRENT version. Read from the same point-read profile snapshot.
+    requireTermsAccepted(userSnap.data());
 
     const cycle = nextCycle(priorIds);
     const assignmentId = cycleAssignmentId(appId, testerId, cycle);

@@ -45,6 +45,7 @@ const {
 const { activeClaimId } = require("./lib/commitments");
 const { readWalletForUpdate } = require("./wallet");
 const { requireAuth, requireDocId, requireNotSuspended, loadUser } = require("./lib/guards");
+const { requireTermsAccepted } = require("./lib/terms");
 
 const FAILED_PRECONDITION = 9;
 
@@ -125,7 +126,8 @@ async function runConfirmSetup(db, { callerId, appId, closedTestConfigured, goog
 async function confirmAppTestingSetupImpl(db, request) {
   const uid = requireAuth(request);
   const appId = requireDocId(request.data && request.data.appId, "appId");
-  await requireNotSuspended(db, uid);
+  const caller = await requireNotSuspended(db, uid);
+  requireTermsAccepted(caller.data);
   const outcome = await runConfirmSetup(db, {
     callerId: uid,
     appId,

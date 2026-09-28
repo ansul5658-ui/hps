@@ -24,6 +24,17 @@ const SCHEDULER_REGION = "asia-south1";
 /** Document id of the official platform testing group. */
 const OFFICIAL_GROUP_ID = "app_testing_official";
 
+/**
+ * Version of the Terms of Service + Privacy Policy a user must have accepted.
+ *
+ * Bump it (and ONLY together with `TERMS_VERSION` in the Android
+ * `AppConfig` and the literal in firestore.rules `acceptedCurrentTerms()`)
+ * when the policies change in a way that needs fresh consent: every user is
+ * then asked to accept again before starting anything new. A unit test
+ * (test/terms.test.js) fails if the three copies disagree.
+ */
+const TERMS_VERSION = 1;
+
 /** Defaults used only when the official group document has to be provisioned. */
 const OFFICIAL_GROUP_NAME = "App Testing";
 const OFFICIAL_GROUP_EMAIL = "developerapptesting@googlegroups.com";
@@ -324,6 +335,7 @@ module.exports = {
   OFFICIAL_GROUP_ID,
   OFFICIAL_GROUP_NAME,
   OFFICIAL_GROUP_EMAIL,
+  TERMS_VERSION,
   REQUIRED_TESTER_COUNT,
   DEFAULT_DAYS_REQUIRED,
   DEFAULT_COMMITMENT_AMOUNT,

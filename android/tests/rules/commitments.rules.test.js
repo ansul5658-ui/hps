@@ -113,7 +113,14 @@ async function seed() {
     await setDoc(doc(db, "users/admin1"), { uid: "admin1", role: "admin" });
     await setDoc(doc(db, `users/${ALICE}`), { uid: ALICE, role: "member", isSuspended: false });
     await setDoc(doc(db, `users/${BOB}`), { uid: BOB, role: "member", isSuspended: false });
-    await setDoc(doc(db, `users/${DEV}`), { uid: DEV, role: "member", isSuspended: false });
+    // Has accepted the Terms (F2), which app creation needs.
+    await setDoc(doc(db, `users/${DEV}`), {
+      uid: DEV,
+      role: "member",
+      isSuspended: false,
+      termsAcceptedVersion: 1,
+      termsAcceptedAt: new Date(0),
+    });
     await setDoc(doc(db, "users/banned"), { uid: "banned", role: "member", isSuspended: true });
     // No role, no isSuspended — what an ordinary sign-in actually produces.
     await setDoc(doc(db, "users/nofields"), { uid: "nofields", email: "nf@x.com" });

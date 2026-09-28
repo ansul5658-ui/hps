@@ -75,4 +75,24 @@ object AppConfig {
     /** Firestore path of the server-maintained discovery pool document. */
     const val QUICK_TEST_POOL_COLLECTION = "discovery"
     const val QUICK_TEST_POOL_DOC_ID = "quickTestPool"
+
+    // ---- Terms of Service + Privacy Policy (release audit F2) -----------
+
+    /**
+     * Version of the Terms + Privacy Policy the app displays and asks the user
+     * to accept. Mirrors `TERMS_VERSION` in functions/lib/constants.js and the
+     * literal in firestore.rules `acceptedCurrentTerms()`; the Functions test
+     * suite fails if they disagree. The server records and enforces it - this
+     * copy decides only whether to show the Terms screen.
+     */
+    const val TERMS_VERSION = 1
+
+    /**
+     * Public URLs of the full policies. RELEASE TODO: both must be set to the
+     * real hosted documents before a production release; no production URL
+     * exists yet, so none is invented here. While blank the Terms screen shows
+     * the links as "not yet available" instead of opening a wrong page.
+     */
+    const val TERMS_OF_SERVICE_URL = ""
+    const val PRIVACY_POLICY_URL = ""
 }

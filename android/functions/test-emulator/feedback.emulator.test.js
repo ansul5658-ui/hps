@@ -13,7 +13,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 // Pre-9D fixtures made join-ready the real way; see test/joinReady.js.
-const { readyAppDoc, seedJoinReady } = require("../test/joinReady");
+const { readyAppDoc, seedJoinReady, TERMS_ACCEPTED } = require("../test/joinReady");
 
 const admin = require("firebase-admin");
 const { getFirestore } = require("firebase-admin/firestore");
@@ -68,8 +68,9 @@ test.beforeEach(clearFirestore);
 
 async function seedWorld() {
   await db.doc(`users/${ADMIN}`).set({ uid: ADMIN, role: "admin" });
-  await db.doc(`users/${DEV}`).set({ uid: DEV });
-  await db.doc(`users/${DEV2}`).set({ uid: DEV2 });
+  // Real signed-in users have accepted the Terms (release audit F2); see test/joinReady.js.
+  await db.doc(`users/${DEV}`).set({ uid: DEV, ...TERMS_ACCEPTED });
+  await db.doc(`users/${DEV2}`).set({ uid: DEV2, ...TERMS_ACCEPTED });
   await db.doc(`apps/${APP}`).set(readyAppDoc(APP, { ownerId: DEV, status: "approved", testerCount: 0 }));
   await db.doc(`apps/${APP2}`).set(readyAppDoc(APP2, { ownerId: DEV2, status: "approved", testerCount: 0 }));
 }
@@ -249,6 +250,7 @@ test("5: a claim with no recorded day yet is refused", async () => {
 
 test("5: a legacy assignment with no stake is refused", async () => {
   await seedWorld();
+  await db.doc(`users/${TESTER}`).set({ uid: TESTER, ...TERMS_ACCEPTED });
   await db.doc(`testingAssignments/${APP}__${TESTER}`).set({ appId: APP, testerId: TESTER, developerId: DEV, status: "inProgress" });
   await db.doc(`testingLogs/${APP}__${TESTER}__2026-03-02`).set({ assignmentId: `${APP}__${TESTER}`, testerId: TESTER });
   const err = await submit(TESTER, valid(`${APP}__${TESTER}`)).catch((e) => e);

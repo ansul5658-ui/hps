@@ -29,6 +29,7 @@ const {
   OFFICIAL_GROUP_EMAIL,
 } = require("./lib/constants");
 const { requireAuth, requireDocId, loadUser } = require("./lib/guards");
+const { requireTermsAccepted } = require("./lib/terms");
 const { evaluateJoin } = require("./lib/joinRules");
 
 /**
@@ -111,6 +112,10 @@ exports.joinGroup = onCall({ region: REGION }, async (request) => {
     }
     throw new HttpsError(decision.code, decision.message);
   }
+  // Joining is a self-confirmation made under the Terms. Checked after the
+  // existing decision so its answers (suspended, closed, full, already a
+  // member) are unchanged.
+  requireTermsAccepted(caller.data);
 
   try {
     await membershipRef.create({

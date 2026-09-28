@@ -39,7 +39,8 @@ const { submitTestingFeedbackImpl } = require("../feedback");
 const { activeClaimId, cycleAssignmentId } = require("../lib/commitments");
 const { addDays, startOfLocalDayMillis } = require("../lib/testingDays");
 const { checkInvariants } = require("../lib/wallet");
-const { OFFICIAL_GROUP_ID, REQUIRED_TESTER_COUNT, COIN_KIND_LOCK } = require("../lib/constants");
+const { OFFICIAL_GROUP_ID, REQUIRED_TESTER_COUNT, COIN_KIND_LOCK, TERMS_VERSION } = require("../lib/constants");
+const { runAcceptTerms } = require("../terms");
 
 const PROJECT_ID = "apptesting-concurrency-test";
 const ADMIN = "admin1";
@@ -108,6 +109,8 @@ const joinOfficialGroup = (uid) => joinGroup.run(as(uid, { groupId: OFFICIAL_GRO
 
 async function user(uid, extra = {}) {
   await db.doc(`users/${uid}`).set({ uid, ...extra });
+  // Like every real account, through the real callable path (release audit F2).
+  await runAcceptTerms(db, { uid, version: TERMS_VERSION });
 }
 
 async function fund(uid, amount = 50) {

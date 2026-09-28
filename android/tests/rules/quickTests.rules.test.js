@@ -63,7 +63,9 @@ async function seed() {
 
     await setDoc(doc(db, "users/admin1"), { uid: "admin1", role: "admin" });
     await setDoc(doc(db, "users/alice"), { uid: "alice", isSuspended: false });
-    await setDoc(doc(db, "users/bob"), { uid: "bob", isSuspended: false });
+    // Has accepted the Terms (F2), so a refused app create is refused for its
+    // own reason, not for missing consent.
+    await setDoc(doc(db, "users/bob"), { uid: "bob", isSuspended: false, termsAcceptedVersion: 1, termsAcceptedAt: new Date(0) });
     await setDoc(doc(db, "users/banned"), { uid: "banned", isSuspended: true });
     // The shape of every real account: no role, no isSuspended. If any new
     // rule dot-accesses a missing key it errors and denies — the exact defect

@@ -81,6 +81,17 @@ service cloud.firestore {
     }
     function activeUser() { return signedIn() && !isSuspended(); }
 
+    // Terms of Service + Privacy Policy consent (release audit F2). The two
+    // acceptance fields on users/{uid} are written only by the acceptTerms
+    // callable - they are absent from every client field list below, so a
+    // client can never set, backdate, clear or touch another user's.
+    // KEEP IN SYNC with TERMS_VERSION in functions/lib/constants.js and the
+    // Android AppConfig; functions/test/terms.test.js checks all three agree.
+    function acceptedCurrentTerms() {
+      return callerExists()
+        && get(callerPath()).data.get('termsAcceptedVersion', 0) >= 1;
+    }
+
     // "The incoming write only touches these keys."
     function onlyChanges(before, after, keys) {
       return after.diff(before).affectedKeys().hasOnly(keys);
@@ -210,6 +221,7 @@ service cloud.firestore {
       // suspended, status must start at pendingReview, and only the
       // client-writable fields may be set.
       allow create: if activeUser()
+        && acceptedCurrentTerms()
         && request.resource.data.ownerId == request.auth.uid
         && request.resource.data.status == 'pendingReview'
         && onlyHas(request.resource.data, [
@@ -294,9 +306,15 @@ service cloud.firestore {
     // ---------- testingAssignments -------------------------------------
 
     match /testingAssignments/{assignmentId} {
-      // A tester may read assignments assigned to them; a developer may
-      // read assignments referencing their app so they can see progress;
-      // an admin may read the queue for the console.
+      // A tester may read assignments assigned to them; an admin may read the
+      // queue for the console.
+      //
+      // The app's DEVELOPER may NOT read them, directly or by query. Every
+      // assignment carries the tester's uid (in `testerId` and in the doc id)
+      // and their timeZone, and `apps.ownerId` is readable by everyone, so a
+      // raw read would let a developer tie a tester to that tester's own
+      // apps. Developers see progress only through the `getMemberProgress`
+      // callable, which returns anonymous "Tester N" labels.
       //
       // Deliberately strict about missing documents: assignment ids are
       // deterministic ("{appId}__{testerId}"), so tolerating a null resource
@@ -304,10 +322,8 @@ service cloud.firestore {
       // app. A lookup of a deleted assignment therefore surfaces as a
       // permission error rather than "not found", which the repository
       // reports as a generic failure.
-      allow read: if isAdmin() || (signedIn() && (
-        resource.data.testerId == request.auth.uid
-          || resource.data.developerId == request.auth.uid
-      ));
+      allow read: if isAdmin()
+        || (signedIn() && resource.data.testerId == request.auth.uid);
 
       // Assignments are created only by the `joinTestingAssignment` callable,
       // which locks the tester's coins, writes the active claim and creates

@@ -1,6 +1,8 @@
 package com.apptesting.app.feature.auth
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,33 +17,63 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.apptesting.app.R
+import com.apptesting.app.core.util.AppConfig
 
 /**
- * Explicit Terms & Privacy acknowledgement. Shown after successful sign-in,
- * before the user reaches the main app. Required for Play Store transparency.
+ * Explicit Terms & Privacy acknowledgement, shown to a signed-in user who has
+ * not accepted the CURRENT Terms version (AppConfig.TERMS_VERSION): after
+ * sign-in, and at app start after a version bump. A user who already accepted
+ * passes straight through to [onAccepted].
  *
- * NOTE: the actual policy documents are hosted externally; this screen presents
- * the summary and captures acceptance. Persistence of the acceptance flag will
- * live in DataStore + Firestore (`users/{uid}.termsAcceptedAt`) — see TODO.
+ * Acceptance is recorded by the `acceptTerms` callable on `users/{uid}`
+ * (version + server timestamp); the server refuses new commitments, group
+ * joins, setup confirmations, feedback and Quick Tests without it.
  */
 @Composable
-fun TermsScreen(onAccepted: () -> Unit) {
+fun TermsScreen(
+    onAccepted: () -> Unit,
+    viewModel: TermsViewModel = viewModel(),
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
     var checked by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
+
+    LaunchedEffect(state) {
+        if (state is TermsUiState.Accepted) onAccepted()
+    }
+
+    if (state !is TermsUiState.Required) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+    val required = state as TermsUiState.Required
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -59,11 +91,15 @@ fun TermsScreen(onAccepted: () -> Unit) {
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                text = "A short summary of what AppTesting does with your data. Full policies are available on our website.",
+                text = "A short summary of what AppTesting does with your data. Read the full policies below before you agree.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(20.dp))
+            Row {
+                PolicyLink("Terms of Service", AppConfig.TERMS_OF_SERVICE_URL)
+                PolicyLink("Privacy Policy", AppConfig.PRIVACY_POLICY_URL)
+            }
+            Spacer(Modifier.height(12.dp))
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -100,21 +136,50 @@ fun TermsScreen(onAccepted: () -> Unit) {
                     color = MaterialTheme.colorScheme.onBackground,
                 )
             }
+            required.error?.let { message ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Spacer(Modifier.height(16.dp))
             Button(
-                onClick = {
-                    // TODO(persist): write termsAcceptedAt to DataStore (local) and users/{uid} (server).
-                    onAccepted()
-                },
-                enabled = checked,
+                onClick = viewModel::onAccept,
+                enabled = checked && !required.submitting,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
                 shape = MaterialTheme.shapes.large,
             ) {
-                Text(stringResource(R.string.terms_ack_action))
+                if (required.submitting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text(stringResource(R.string.terms_ack_action))
+                }
             }
         }
+    }
+}
+
+/**
+ * Opens a full policy document. While its URL is not configured (see
+ * AppConfig) it is shown disabled as "not yet available" rather than opening
+ * a wrong page.
+ */
+@Composable
+private fun PolicyLink(label: String, url: String) {
+    val link = policyLinkOrNull(url)
+    val uriHandler = LocalUriHandler.current
+    TextButton(
+        onClick = { link?.let(uriHandler::openUri) },
+        enabled = link != null,
+    ) {
+        Text(if (link != null) label else "$label (not yet available)")
     }
 }
 

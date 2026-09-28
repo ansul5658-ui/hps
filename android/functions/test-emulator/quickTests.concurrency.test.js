@@ -33,6 +33,7 @@ const {
   runPoolRefresh,
 } = require("../quickTests");
 const { quickTestSessionId } = require("../lib/quickTests");
+const { TERMS_ACCEPTED } = require("../test/joinReady");
 
 const PROJECT_ID = "apptesting-concurrency-test";
 const TESTER = "tester1";
@@ -75,9 +76,11 @@ async function seed({
   adminDoc = { uid: "admin1", role: "admin" },
 } = {}) {
   const batch = db.batch();
-  batch.set(db.doc("users/" + TESTER), tester);
+  // Real signed-in users have accepted the Terms (release audit F2); fields
+  // the test sets win.
+  batch.set(db.doc("users/" + TESTER), { ...TERMS_ACCEPTED, ...tester });
   batch.set(db.doc("users/admin1"), adminDoc);
-  batch.set(db.doc("users/" + OWNER), { uid: OWNER });
+  batch.set(db.doc("users/" + OWNER), { uid: OWNER, ...TERMS_ACCEPTED });
   for (const app of apps) {
     const { appId, ...fields } = app;
     batch.set(db.doc("apps/" + appId), {

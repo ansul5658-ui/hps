@@ -39,6 +39,7 @@ internal class MockStore {
             email = "developer@example.com",
             createdAtMillis = daysAgo(60),
             termsAcceptedAtMillis = daysAgo(60),
+            termsAcceptedVersion = AppConfig.TERMS_VERSION,
             // Reward-era field. Kept so the legacy-data path stays exercised
             // in dev mode; nothing user-facing reads it any more — the Testing
             // Coin balance comes from [wallet] below.

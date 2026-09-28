@@ -20,7 +20,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 // Pre-9D fixtures made join-ready the real way; see test/joinReady.js.
-const { readyAppDoc, joinReadyDocs } = require("../test/joinReady");
+const { readyAppDoc, joinReadyDocs, TERMS_ACCEPTED } = require("../test/joinReady");
 
 const admin = require("firebase-admin");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
@@ -87,9 +87,9 @@ async function seedCommitment({ done = 0, status = "inProgress", available = 0, 
     windowDays: LEGACY_COMMITMENT_WINDOW_DAYS,
   });
   const batch = db.batch();
-  batch.set(db.doc(`users/${TESTER}`), { uid: TESTER });
+  batch.set(db.doc(`users/${TESTER}`), { uid: TESTER, ...TERMS_ACCEPTED });
   for (const [p, d] of Object.entries(joinReadyDocs(TESTER))) batch.set(db.doc(p), d);
-  batch.set(db.doc(`users/${DEV}`), { uid: DEV });
+  batch.set(db.doc(`users/${DEV}`), { uid: DEV, ...TERMS_ACCEPTED });
   batch.set(db.doc(`apps/${APP}`), readyAppDoc(APP, { ownerId: DEV, status: "approved", testerCount: 1 }));
   batch.set(db.doc(assignmentPath()), {
     appId: APP,
@@ -468,9 +468,9 @@ test("a real claim pins a usable window and the cycle runs to completion", async
   // Uses the production claim path rather than a hand-seeded assignment, so
   // the window this test exercises is the one the claim actually writes.
   const batch = db.batch();
-  batch.set(db.doc(`users/${TESTER}`), { uid: TESTER });
+  batch.set(db.doc(`users/${TESTER}`), { uid: TESTER, ...TERMS_ACCEPTED });
   for (const [p, d] of Object.entries(joinReadyDocs(TESTER))) batch.set(db.doc(p), d);
-  batch.set(db.doc(`users/${DEV}`), { uid: DEV });
+  batch.set(db.doc(`users/${DEV}`), { uid: DEV, ...TERMS_ACCEPTED });
   batch.set(db.doc(`apps/${APP}`), readyAppDoc(APP, { ownerId: DEV, status: "approved", testerCount: 0 }));
   batch.set(db.doc(walletPath()), {
     available: 50,

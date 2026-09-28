@@ -29,8 +29,10 @@ const {
   updateDoc,
   deleteDoc,
   query,
+  where,
   orderBy,
   serverTimestamp,
+  deleteField,
 } = require("firebase/firestore");
 
 const RULES_PATH = path.resolve(__dirname, "../../firestore.rules");
@@ -47,6 +49,9 @@ function todayKey(offsetDays = 0) {
 function asUser(uid) {
   return testEnv.authenticatedContext(uid).firestore();
 }
+
+/** What the acceptTerms callable records (release audit F2). */
+const TERMS_ACCEPTED = { termsAcceptedVersion: 1, termsAcceptedAt: new Date(0) };
 function asAnon() {
   return testEnv.unauthenticatedContext().firestore();
 }
@@ -57,14 +62,16 @@ async function seed() {
     const db = ctx.firestore();
 
     await setDoc(doc(db, "users/admin1"), { uid: "admin1", role: "admin", email: "a@x.com" });
-    await setDoc(doc(db, "users/alice"), { uid: "alice", role: "member", isSuspended: false });
-    await setDoc(doc(db, "users/bob"), { uid: "bob", role: "member", isSuspended: false });
-    await setDoc(doc(db, "users/banned"), { uid: "banned", role: "member", isSuspended: true });
+    // Real signed-in members have accepted the Terms (F2), which app creation needs.
+    await setDoc(doc(db, "users/alice"), { uid: "alice", role: "member", isSuspended: false, ...TERMS_ACCEPTED });
+    await setDoc(doc(db, "users/bob"), { uid: "bob", role: "member", isSuspended: false, ...TERMS_ACCEPTED });
+    await setDoc(doc(db, "users/banned"), { uid: "banned", role: "member", isSuspended: true, ...TERMS_ACCEPTED });
     // Mirrors what the client's own create rule actually produces: no `role`,
     // no `isSuspended` at all. Every ordinary sign-in looks like this until
     // an admin explicitly promotes or suspends the account — see the
-    // "missing optional fields" section below.
-    await setDoc(doc(db, "users/nofields"), { uid: "nofields", email: "nofields@x.com" });
+    // "missing optional fields" section below. (Plus the Terms acceptance the
+    // acceptTerms callable adds right after sign-in.)
+    await setDoc(doc(db, "users/nofields"), { uid: "nofields", email: "nofields@x.com", ...TERMS_ACCEPTED });
 
     await setDoc(doc(db, "apps/app1"), {
       ownerId: "bob",
@@ -320,6 +327,109 @@ test("users can read themselves, admins can read the roster, nobody else can", a
 });
 
 // ---------------------------------------------------------------------------
+// Terms acceptance (release audit F2). `termsAcceptedVersion` and
+// `termsAcceptedAt` are written only by the acceptTerms callable (server
+// clock); no client may set, backdate, clear or touch another user's.
+// ---------------------------------------------------------------------------
+
+test("F2: a client cannot create its profile already carrying Terms acceptance", async () => {
+  const db = asUser("fresh");
+  const base = { uid: "fresh", email: "f@x.com", displayName: "F", photoUrl: "", updatedAt: serverTimestamp() };
+  await assertFails(setDoc(doc(db, "users/fresh"), { ...base, termsAcceptedVersion: 1 }));
+  await assertFails(setDoc(doc(db, "users/fresh"), { ...base, termsAcceptedAt: serverTimestamp() }));
+  await assertSucceeds(setDoc(doc(db, "users/fresh"), base), "the ordinary profile create still works");
+});
+
+test("F2: a client cannot set, raise, backdate or clear its own acceptance", async () => {
+  const db = asUser("alice");
+  await assertFails(updateDoc(doc(db, "users/alice"), { termsAcceptedVersion: 2 }));
+  await assertFails(updateDoc(doc(db, "users/alice"), { termsAcceptedVersion: 0 }));
+  // alice's seeded time is new Date(0); any DIFFERENT time is a real change.
+  // (Re-writing the identical value is an empty diff and changes nothing.)
+  await assertFails(updateDoc(doc(db, "users/alice"), { termsAcceptedAt: new Date(-86_400_000) }));
+  await assertFails(updateDoc(doc(db, "users/alice"), { termsAcceptedAt: new Date("2030-01-01T00:00:00Z") }));
+  await assertFails(updateDoc(doc(db, "users/alice"), { termsAcceptedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db, "users/alice"), { termsAcceptedVersion: deleteField() }));
+  await assertFails(updateDoc(doc(db, "users/alice"), { termsAcceptedAt: deleteField() }));
+});
+
+test("F2: a client cannot grant acceptance to its own profile that has none", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "users/unaccepted"), { uid: "unaccepted", email: "u@x.com" });
+  });
+  const db = asUser("unaccepted");
+  await assertFails(updateDoc(doc(db, "users/unaccepted"), { termsAcceptedVersion: 1 }));
+  await assertFails(updateDoc(doc(db, "users/unaccepted"), { termsAcceptedVersion: 1, termsAcceptedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(db, "users/unaccepted"), { termsAcceptedVersion: 1 }, { merge: true }));
+  await assertFails(updateDoc(doc(db, "users/unaccepted"), { termsAcceptedAt: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(db, "users/unaccepted"), { displayName: "U" }), "ordinary edits still work");
+});
+
+test("F2: a client cannot write another user's acceptance", async () => {
+  const db = asUser("alice");
+  await assertFails(updateDoc(doc(db, "users/bob"), { termsAcceptedVersion: 0 }));
+  await assertFails(updateDoc(doc(db, "users/bob"), { termsAcceptedAt: deleteField() }));
+  await assertFails(setDoc(doc(db, "users/stranger"), { uid: "stranger", termsAcceptedVersion: 1 }));
+});
+
+test("F2: the app's sign-in profile upsert still works and leaves acceptance intact", async () => {
+  // The exact shape FirebaseAuthUserRepository.upsertProfile writes (set + merge).
+  const db = asUser("alice");
+  await assertSucceeds(
+    setDoc(
+      doc(db, "users/alice"),
+      { uid: "alice", displayName: "Alice", email: "a@x.com", photoUrl: "", updatedAt: serverTimestamp() },
+      { merge: true },
+    ),
+  );
+  let stored;
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    stored = (await getDoc(doc(ctx.firestore(), "users/alice"))).data();
+  });
+  assert.equal(stored.termsAcceptedVersion, 1);
+  assert.ok(stored.termsAcceptedAt, "acceptance survives the upsert");
+});
+
+test("F2: submitting an app needs acceptance of the current Terms", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, "users/noterms"), { uid: "noterms", isSuspended: false });
+    await setDoc(doc(db, "users/oldterms"), { uid: "oldterms", termsAcceptedVersion: 0, termsAcceptedAt: new Date(0) });
+    await setDoc(doc(db, "users/stringterms"), { uid: "stringterms", termsAcceptedVersion: "1" });
+  });
+  const appFor = (uid) => ({
+    ownerId: uid,
+    appName: "A",
+    packageName: "com.a",
+    versionName: "1.0",
+    playStoreUrl: "",
+    closedTestingUrl: "",
+    iconUrl: null,
+    description: "",
+    status: "pendingReview",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  await assertFails(setDoc(doc(asUser("noterms"), "apps/nt1"), appFor("noterms")));
+  await assertFails(setDoc(doc(asUser("oldterms"), "apps/ot1"), appFor("oldterms")));
+  await assertFails(setDoc(doc(asUser("stringterms"), "apps/st1"), appFor("stringterms")));
+  await assertFails(setDoc(doc(asUser("noprofile"), "apps/np1"), appFor("noprofile")));
+  await assertSucceeds(setDoc(doc(asUser("alice"), "apps/ok1"), appFor("alice")));
+});
+
+test("F2: a user who has not accepted keeps editing their own apps and profile", async () => {
+  // Consent gates starting something NEW; existing data stays manageable.
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "users/noterms"), { uid: "noterms", displayName: "N" });
+    await setDoc(doc(ctx.firestore(), "apps/mine"), { ownerId: "noterms", appName: "Mine", status: "pendingReview" });
+  });
+  const db = asUser("noterms");
+  await assertSucceeds(getDoc(doc(db, "users/noterms")));
+  await assertSucceeds(updateDoc(doc(db, "users/noterms"), { displayName: "New name" }));
+  await assertSucceeds(updateDoc(doc(db, "apps/mine"), { appName: "Renamed" }));
+});
+
+// ---------------------------------------------------------------------------
 // Missing optional fields — isSuspended and role can genuinely be absent
 //
 // Regression coverage for the production bug where isSuspended()/isAdmin()
@@ -511,10 +621,70 @@ test("a tester cannot delete an assignment", async () => {
   await assertFails(deleteDoc(doc(db, "testingAssignments/app1__alice")));
 });
 
-test("tester and developer can read the assignment; an unrelated user cannot", async () => {
+// ---------------------------------------------------------------------------
+// Tester privacy (release audit F1). Every assignment carries the tester's uid
+// (`testerId`, and inside the doc id) and their timeZone, and `apps.ownerId`
+// is public - so a developer able to read these could tie an "anonymous"
+// tester to that tester's own apps. Developers get progress only through the
+// `getMemberProgress` callable's anonymous labels. In the seed, bob is the
+// developer of every assignment and alice/nofields/banned are its testers.
+// ---------------------------------------------------------------------------
+
+test("a tester can read their own assignment; an unrelated user cannot", async () => {
   await assertSucceeds(getDoc(doc(asUser("alice"), "testingAssignments/app1__alice")));
-  await assertSucceeds(getDoc(doc(asUser("bob"), "testingAssignments/app1__alice")));
   await assertFails(getDoc(doc(asUser("banned"), "testingAssignments/app1__alice")));
+});
+
+test("F1: the developer cannot get a tester's assignment for their own app", async () => {
+  await assertFails(getDoc(doc(asUser("bob"), "testingAssignments/app1__alice")));
+  await assertFails(getDoc(doc(asUser("bob"), "testingAssignments/done__alice")));
+  await assertFails(getDoc(doc(asUser("bob"), "testingAssignments/app1__nofields")));
+});
+
+test("F1: the developer cannot list or query their app's assignments by any filter", async () => {
+  const db = asUser("bob");
+  const assignments = collection(db, "testingAssignments");
+  await assertFails(getDocs(query(assignments, where("developerId", "==", "bob"))));
+  await assertFails(getDocs(query(assignments, where("appId", "==", "app1"))));
+  await assertFails(getDocs(query(assignments, where("appId", "==", "app1"), where("developerId", "==", "bob"))));
+  await assertFails(getDocs(assignments));
+});
+
+test("F1: a developer who is also a tester still reads only their OWN tester assignments", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "testingAssignments/app2__bob"), {
+      appId: "app2",
+      testerId: "bob",
+      developerId: "alice",
+      status: "ready",
+    });
+  });
+  const db = asUser("bob");
+  await assertSucceeds(getDoc(doc(db, "testingAssignments/app2__bob")));
+  const own = await assertSucceeds(
+    getDocs(query(collection(db, "testingAssignments"), where("testerId", "==", "bob"))),
+  );
+  assert.deepEqual(own.docs.map((d) => d.id), ["app2__bob"]);
+  // ...and being a tester elsewhere opens nothing on their own app.
+  await assertFails(getDoc(doc(db, "testingAssignments/app1__alice")));
+  await assertFails(getDocs(query(collection(db, "testingAssignments"), where("developerId", "==", "bob"))));
+});
+
+test("F1: a tester can query their own assignments but not another tester's", async () => {
+  const db = asUser("alice");
+  const assignments = collection(db, "testingAssignments");
+  const own = await assertSucceeds(getDocs(query(assignments, where("testerId", "==", "alice"))));
+  assert.ok(own.docs.length > 0 && own.docs.every((d) => d.get("testerId") === "alice"));
+  await assertFails(getDocs(query(assignments, where("testerId", "==", "nofields"))));
+  await assertFails(getDocs(query(assignments, where("appId", "==", "app1"))));
+  await assertFails(getDoc(doc(db, "testingAssignments/app1__nofields")));
+});
+
+test("F1: an admin can still get and list every assignment", async () => {
+  const db = asUser("admin1");
+  await assertSucceeds(getDoc(doc(db, "testingAssignments/app1__alice")));
+  const all = await assertSucceeds(getDocs(collection(db, "testingAssignments")));
+  assert.ok(all.docs.length >= 5);
 });
 
 // ---------------------------------------------------------------------------

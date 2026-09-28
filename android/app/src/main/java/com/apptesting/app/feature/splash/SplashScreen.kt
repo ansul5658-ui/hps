@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.apptesting.app.core.data.ServiceLocator
 import com.apptesting.app.core.data.UserRepository
+import com.apptesting.app.feature.auth.needsTermsAcceptance
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
 
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.firstOrNull
 fun SplashScreen(
     onSignedIn: () -> Unit,
     onNeedsSignIn: () -> Unit,
+    onNeedsTerms: () -> Unit,
     userRepository: UserRepository = ServiceLocator.userRepository,
 ) {
     val scale by animateFloatAsState(
@@ -45,10 +47,12 @@ fun SplashScreen(
         alpha = 1f
         delay(2000)
         val user = userRepository.currentUser.firstOrNull()
-        if (user != null) {
-            onSignedIn()
-        } else {
-            onNeedsSignIn()
+        when {
+            user == null -> onNeedsSignIn()
+            // A signed-in user must have accepted the CURRENT Terms before the
+            // main app (release audit F2); the server enforces it too.
+            needsTermsAcceptance(userRepository.acceptedTermsVersion()) -> onNeedsTerms()
+            else -> onSignedIn()
         }
     }
 

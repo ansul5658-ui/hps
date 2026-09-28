@@ -36,6 +36,7 @@ const quickTests = require("./quickTests");
 const progress = require("./progress");
 const feedback = require("./feedback");
 const setup = require("./setup");
+const terms = require("./terms");
 
 // Admin-only callables.
 exports.adminSetAppStatus = adminOps.adminSetAppStatus;
@@ -107,6 +108,11 @@ exports.adminListFeedback = feedback.adminListFeedback;
 exports.confirmAppTestingSetup = setup.confirmAppTestingSetup;
 exports.getAppTestingReadiness = setup.getAppTestingReadiness;
 exports.getJoinEligibility = setup.getJoinEligibility;
+
+// Terms of Service + Privacy Policy acceptance. The only writer of
+// `users/{uid}.termsAcceptedVersion/termsAcceptedAt`; the actions that start
+// something new refuse callers who have not accepted the current version.
+exports.acceptTerms = terms.acceptTerms;
 
 // Automatic expiry. `evaluateExpiredCommitments` is the ONLY scheduled writer
 // of money in this project, and it deliberately owns none of the arithmetic:

@@ -21,7 +21,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 // Pre-9D fixtures made join-ready the real way; see test/joinReady.js.
-const { readyAppDoc, joinReadyDocs } = require("../test/joinReady");
+const { readyAppDoc, joinReadyDocs, TERMS_ACCEPTED } = require("../test/joinReady");
 
 const admin = require("firebase-admin");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
@@ -98,8 +98,9 @@ async function seed({
 } = {}) {
   const batch = db.batch();
   batch.set(db.doc(`users/${ADMIN}`), adminDoc);
-  batch.set(db.doc(`users/${DEV}`), { uid: DEV });
-  batch.set(db.doc(`users/${TESTER}`), tester);
+  // Real signed-in users have accepted the Terms (release audit F2); see test/joinReady.js.
+  batch.set(db.doc(`users/${DEV}`), { uid: DEV, ...TERMS_ACCEPTED });
+  batch.set(db.doc(`users/${TESTER}`), { ...TERMS_ACCEPTED, ...tester });
   for (const [p, d] of Object.entries(joinReadyDocs(TESTER))) batch.set(db.doc(p), d);
   for (const appId of apps) {
     batch.set(db.doc(`apps/${appId}`), readyAppDoc(appId, {
@@ -829,7 +830,7 @@ test("the full lifecycle leaves a complete, auditable ledger", async () => {
 /** A tester with a sound, funded wallet - written exactly as the server would. */
 async function fundTester(uid, available = 50) {
   const batch = db.batch();
-  batch.set(db.doc(`users/${uid}`), { uid });
+  batch.set(db.doc(`users/${uid}`), { uid, ...TERMS_ACCEPTED });
   for (const [p, d] of Object.entries(joinReadyDocs(uid))) batch.set(db.doc(p), d);
   batch.set(db.doc(walletPath(uid)), {
     available,

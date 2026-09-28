@@ -55,6 +55,7 @@ const {
   requireDocId,
   optionalString,
 } = require("./lib/guards");
+const { requireTermsAccepted } = require("./lib/terms");
 
 /** Per-user daily counter. Reading it inside a transaction is the rate limit. */
 function dayCounterPath(uid, dayKey) {
@@ -140,6 +141,9 @@ async function runStartQuickTest(db, { uid, appId, now = Date.now() }) {
       }
       throw new HttpsError(eligible.code, eligible.message);
     }
+    // After the existing decision, so its answers (including the idempotent
+    // "already started today") are unchanged. Same point-read profile.
+    requireTermsAccepted(user.exists ? user.data() : null);
 
     // ---- writes: these three commit together or not at all -----------
     // `create`, never `set`: an existing session must fail the transaction

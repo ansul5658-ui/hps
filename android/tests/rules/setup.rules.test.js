@@ -52,8 +52,9 @@ async function seed() {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
     await setDoc(doc(db, "users/admin1"), { uid: "admin1", role: "admin" });
-    await setDoc(doc(db, `users/${DEV}`), { uid: DEV });
-    await setDoc(doc(db, `users/${OTHER}`), { uid: OTHER });
+    // Signed-in developers who accepted the Terms (F2), which app creation needs.
+    await setDoc(doc(db, `users/${DEV}`), { uid: DEV, termsAcceptedVersion: 1, termsAcceptedAt: new Date(0) });
+    await setDoc(doc(db, `users/${OTHER}`), { uid: OTHER, termsAcceptedVersion: 1, termsAcceptedAt: new Date(0) });
     await setDoc(doc(db, `apps/${APP}`), {
       ownerId: DEV,
       appName: "App One",

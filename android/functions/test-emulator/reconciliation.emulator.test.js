@@ -19,7 +19,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 // Pre-9D fixtures made join-ready the real way; see test/joinReady.js.
-const { readyAppDoc, joinReadyDocs } = require("../test/joinReady");
+const { readyAppDoc, joinReadyDocs, TERMS_ACCEPTED } = require("../test/joinReady");
 
 const admin = require("firebase-admin");
 const { getFirestore } = require("firebase-admin/firestore");
@@ -67,8 +67,8 @@ async function clearFirestore() {
 async function seedWorld() {
   const batch = db.batch();
   batch.set(db.doc(`users/${ADMIN}`), { uid: ADMIN, role: "admin" });
-  batch.set(db.doc(`users/${DEV}`), { uid: DEV });
-  batch.set(db.doc(`users/${TESTER}`), { uid: TESTER });
+  batch.set(db.doc(`users/${DEV}`), { uid: DEV, ...TERMS_ACCEPTED });
+  batch.set(db.doc(`users/${TESTER}`), { uid: TESTER, ...TERMS_ACCEPTED });
   for (const [p, d] of Object.entries(joinReadyDocs(TESTER))) batch.set(db.doc(p), d);
   for (const appId of [APP_A, APP_B]) {
     batch.set(db.doc(`apps/${appId}`), readyAppDoc(appId, { ownerId: DEV, status: "approved", appName: appId }));

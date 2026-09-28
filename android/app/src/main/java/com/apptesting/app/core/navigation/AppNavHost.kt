@@ -18,7 +18,9 @@ private const val TAG = "AUTH_DEBUG"
 
 /**
  * Root nav host. Two top-level graphs live here:
- *   1. Onboarding — Splash → SignIn → Terms → GroupOnboarding.
+ *   1. Onboarding — Splash → SignIn → Terms → GroupOnboarding, or, for a
+ *      signed-in user who has not accepted the current Terms, Splash →
+ *      TermsUpdate → Main.
  *   2. Main — a nested graph hosting the bottom-nav tabs (built in MainScaffold).
  */
 @Composable
@@ -44,6 +46,18 @@ fun AppNavHost() {
                 Log.d(TAG, "[FLOW] Navigation from Splash -> SignIn")
                 navController.navigate(Routes.SignIn) {
                     popUpTo(Routes.Splash) { inclusive = true }
+                }
+            },
+            onNeedsTermsAtSplash = {
+                Log.d(TAG, "[FLOW] Navigation from Splash -> TermsUpdate")
+                navController.navigate(Routes.TermsUpdate) {
+                    popUpTo(Routes.Splash) { inclusive = true }
+                }
+            },
+            onTermsUpdateAccepted = {
+                Log.d(TAG, "[FLOW] Navigation from TermsUpdate -> Main")
+                navController.navigate(Routes.Main) {
+                    popUpTo(Routes.TermsUpdate) { inclusive = true }
                 }
             },
             onSignInSuccess = {
@@ -82,6 +96,8 @@ fun AppNavHost() {
 private fun NavGraphBuilder.onboardingGraph(
     onSignedInAtSplash: () -> Unit,
     onNeedsSignInAtSplash: () -> Unit,
+    onNeedsTermsAtSplash: () -> Unit,
+    onTermsUpdateAccepted: () -> Unit,
     onSignInSuccess: () -> Unit,
     onTermsAccepted: () -> Unit,
     onGroupOnboardingCompleted: () -> Unit,
@@ -90,10 +106,13 @@ private fun NavGraphBuilder.onboardingGraph(
         SplashScreen(
             onSignedIn = onSignedInAtSplash,
             onNeedsSignIn = onNeedsSignInAtSplash,
+            onNeedsTerms = onNeedsTermsAtSplash,
         )
     }
     composable(Routes.SignIn) { SignInScreen(onSignedIn = onSignInSuccess) }
+    // After sign-in: skipped automatically when the current Terms are already accepted.
     composable(Routes.Terms) { TermsScreen(onAccepted = onTermsAccepted) }
+    composable(Routes.TermsUpdate) { TermsScreen(onAccepted = onTermsUpdateAccepted) }
     composable(Routes.GroupOnboarding) {
         GroupOnboardingScreen(onCompleted = onGroupOnboardingCompleted)
     }

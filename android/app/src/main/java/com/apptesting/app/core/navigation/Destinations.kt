@@ -23,6 +23,8 @@ object Routes {
     const val Splash = "splash"
     const val SignIn = "signIn"
     const val Terms = "terms"
+    /** Re-acceptance at app start (not yet accepted, or a newer version) - leads to Main. */
+    const val TermsUpdate = "terms/update"
     const val GroupOnboarding = "onboarding/group"
 
     // Main app graph

@@ -32,6 +32,7 @@ const { joinTestingAssignmentImpl } = require("../commitments");
 const { confirmAppTestingSetupImpl, getJoinEligibilityImpl } = require("../setup");
 const { runAdminGrant } = require("../wallet");
 const { OFFICIAL_GROUP_ID, OFFICIAL_GROUP_NAME, OFFICIAL_GROUP_EMAIL } = require("../lib/constants");
+const { TERMS_ACCEPTED } = require("../test/joinReady");
 
 const PROJECT_ID = "apptesting-concurrency-test";
 const ADMIN = "admin1";
@@ -85,6 +86,18 @@ async function leave(uid, gid, { sync = true } = {}) {
   if (sync) await syncWrite(uid, gid, before);
 }
 
+/**
+ * Profiles for real signed-in users, who have accepted the Terms (release audit
+ * F2) - joinGroup refuses anyone else. Written BEFORE any race starts, so the
+ * races below time exactly what they did before. The Terms gate itself is
+ * tested in terms.emulator.test.js.
+ */
+async function signedUp(...list) {
+  const batch = db.batch();
+  for (const uid of list) batch.set(db.doc(`users/${uid}`), { uid, ...TERMS_ACCEPTED });
+  await batch.commit();
+}
+
 async function group(gid, data) {
   await db.doc(`groups/${gid}`).set(data);
 }
@@ -110,6 +123,7 @@ const memberCountOf = async (gid) => (await db.doc(`groups/${gid}`).get()).get("
 
 test("join: the real callable creates one membership and nothing else", async () => {
   await group(G, { status: "open", memberCap: 0, memberCount: 0 });
+  await signedUp("u1");
   const out = await join("u1", G);
   assert.deepEqual(out, { groupId: G, joined: true, alreadyMember: false });
 
@@ -124,6 +138,7 @@ test("join: the real callable creates one membership and nothing else", async ()
 
 test("join: re-joining is idempotent against real Firestore", async () => {
   await group(G, { status: "open", memberCap: 0 });
+  await signedUp("u1");
   await join("u1", G);
   const first = (await membershipRef("u1", G).get()).get("joinedAt");
   assert.deepEqual(await join("u1", G), { groupId: G, joined: false, alreadyMember: true });
@@ -134,6 +149,7 @@ test(`join: parallel joins by the SAME user produce exactly one membership, acro
   for (let round = 0; round < ROUNDS; round += 1) {
     await clearFirestore();
     await group(G, { status: "open", memberCap: 0 });
+    await signedUp("same");
     const out = await settled(Array.from({ length: 10 }, () => join("same", G)));
     const label = `round ${round}`;
     assert.deepEqual(out.rejected.map((e) => `${e.code} ${e.message}`), [], `${label}: no call fails`);
@@ -148,6 +164,7 @@ test(`join: parallel joins by DIFFERENT users into an uncapped group all succeed
   for (let round = 0; round < ROUNDS; round += 1) {
     await clearFirestore();
     await group(G, { status: "open", memberCap: 0 });
+    await signedUp(...people);
     const out = await settled(people.map((uid) => join(uid, G)));
     assert.deepEqual(out.rejected.map((e) => e.code), [], `round ${round}`);
     assert.equal(out.fulfilled.filter((r) => r.joined).length, people.length, `round ${round}`);
@@ -161,6 +178,7 @@ test(`join: parallel joins by DIFFERENT users into an uncapped group all succeed
 
 test("cap: when the trigger runs after every join, sequential joins stop exactly at the cap", async () => {
   await group(G, { status: "open", memberCap: 3, memberCount: 0 });
+  await signedUp(...uids("s", 5));
   const codes = [];
   for (const uid of uids("s", 5)) {
     try {
@@ -181,6 +199,7 @@ test(`cap: CURRENT behaviour - a burst at N-1 capacity OVERSHOOTS the cap before
   for (let round = 0; round < ROUNDS; round += 1) {
     await clearFirestore();
     await group(G, { status: "open", memberCap: CAP, memberCount: 0 });
+    await signedUp(...existing, ...burst);
     for (const uid of existing) await joinThenSync(uid, G); // 4 of 5 seats, fully synced
     assert.equal(await memberCountOf(G), CAP - 1);
 
@@ -214,6 +233,7 @@ test(`cap: joins racing with their OWN triggers - record how far the cap is exce
   for (let round = 0; round < ROUNDS; round += 1) {
     await clearFirestore();
     await group(G, { status: "open", memberCap: CAP, memberCount: 0 });
+    await signedUp(...existing, ...burst);
     for (const uid of existing) await joinThenSync(uid, G);
 
     const out = await settled(burst.map((uid) => joinThenSync(uid, G)));
@@ -246,6 +266,7 @@ test(`cap: joins racing with their OWN triggers - record how far the cap is exce
 
 test("cap: CURRENT behaviour - a mirror row left behind by a missed trigger still occupies a seat", async () => {
   await group(G, { status: "open", memberCap: 1, memberCount: 0 });
+  await signedUp("first", "second");
   await joinThenSync("first", G);
   await leave("first", G, { sync: false }); // the trigger for the leave never ran
 
@@ -264,6 +285,7 @@ test("cap: CURRENT behaviour - a mirror row left behind by a missed trigger stil
 // ---------------------------------------------------------------------------
 
 test("official group: the first join provisions it with safe defaults", async () => {
+  await signedUp("u1");
   assert.equal(await exists(db.doc(`groups/${OFFICIAL_GROUP_ID}`)), false);
   assert.equal((await join("u1", OFFICIAL_GROUP_ID)).joined, true);
   const g = await db.doc(`groups/${OFFICIAL_GROUP_ID}`).get();
@@ -280,6 +302,7 @@ test(`official group: parallel first joins all succeed and leave one well-formed
   const people = uids("o", 5);
   for (let round = 0; round < ROUNDS; round += 1) {
     await clearFirestore();
+    await signedUp(...people);
     const out = await settled(people.map((uid) => join(uid, OFFICIAL_GROUP_ID)));
     assert.deepEqual(out.rejected.map((e) => `${e.code} ${e.message}`), [], `round ${round}`);
     assert.equal(out.fulfilled.filter((r) => r.joined).length, people.length, `round ${round}`);
@@ -295,6 +318,7 @@ test(`official group: parallel first joins all succeed and leave one well-formed
 
 test("mirror: join, second join, leave and recount keep the mirror and memberCount in step", async () => {
   await group(G, { status: "open", memberCap: 0, memberCount: 0 });
+  await signedUp("a", "b");
 
   await joinThenSync("a", G);
   const mirrorA = await mirrorRef(G, "a").get();
@@ -352,8 +376,7 @@ async function submitApprovedConfirmedApp(ownerId, appId) {
 
 async function claimReadyWorld(tester) {
   await db.doc(`users/${ADMIN}`).set({ uid: ADMIN, role: "admin" });
-  await db.doc(`users/${DEV}`).set({ uid: DEV });
-  await db.doc(`users/${tester}`).set({ uid: tester });
+  await signedUp(DEV, tester);
   await submitApprovedConfirmedApp(DEV, TARGET);
   await submitApprovedConfirmedApp(tester, `own_${tester}`);
   await join(tester, OFFICIAL_GROUP_ID);
@@ -373,7 +396,12 @@ test("claim gate: CURRENT behaviour - membership of an ARCHIVED group still sati
   assert.equal((await db.doc(`groups/${OFFICIAL_GROUP_ID}`).get()).get("status"), "archived");
 
   // New members are refused by joinGroup...
-  await assert.rejects(join("newcomer", OFFICIAL_GROUP_ID), (e) => e.code === "failed-precondition");
+  // (An accepted profile, so the refusal is the archive's, not the Terms'.)
+  await signedUp("newcomer");
+  await assert.rejects(
+    join("newcomer", OFFICIAL_GROUP_ID),
+    (e) => e.code === "failed-precondition" && !(e.details && e.details.reason === "termsNotAccepted"),
+  );
 
   // ...but an existing member's membership still unlocks a new claim.
   const eligibility = await getJoinEligibilityImpl(db, as(tester, { appId: TARGET }));

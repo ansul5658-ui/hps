@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.apptesting.app.core.data.AuthGateway
 import com.apptesting.app.core.data.UserRepository
+import com.apptesting.app.core.data.firebase.functions.AppFunctions
 import com.apptesting.app.core.model.User
 import com.apptesting.app.core.model.UserRole
 import com.google.firebase.Timestamp
@@ -44,6 +45,7 @@ internal class FirebaseAuthUserRepository(
     private val appContext: Context,
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
+    private val functions: AppFunctions = AppFunctions(),
 ) : UserRepository, AuthGateway {
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -71,6 +73,9 @@ internal class FirebaseAuthUserRepository(
                                 (it as? Timestamp)?.toDate()?.time
                             } ?: identity.createdAtMillis,
                             isSuspended = doc.getBoolean("isSuspended") ?: false,
+                            termsAcceptedVersion = doc.termsAcceptedVersion(),
+                            termsAcceptedAtMillis = (doc.get("termsAcceptedAt") as? Timestamp)
+                                ?.toDate()?.time,
                         )
                     }
                     .onStart { emit(identity) }
@@ -95,6 +100,31 @@ internal class FirebaseAuthUserRepository(
         Log.d(TAG, "[AUTH] FirebaseAuth.signOut()")
         auth.signOut()
     }
+
+    // ---- Terms acceptance (release audit F2) --------------------------
+    override suspend fun acceptedTermsVersion(): Int? {
+        val uid = auth.currentUser?.uid ?: return null
+        return try {
+            withTimeout(FIRESTORE_STEP_TIMEOUT_MS) {
+                firestore.collection("users").document(uid).get().await()
+            }.termsAcceptedVersion()
+        } catch (e: Exception) {
+            // Unreadable counts as "not accepted": the Terms screen is shown,
+            // and accepting goes through the server either way.
+            Log.e(TAG, "[TERMS] could not read users/$uid", e)
+            null
+        }
+    }
+
+    override suspend fun acceptTerms(version: Int): Result<Unit> = runCatching {
+        // The callable writes only the caller's own profile and stamps it with
+        // the server clock; the client sends nothing but the version it showed.
+        functions.call("acceptTerms", mapOf("version" to version))
+        Unit
+    }
+
+    private fun DocumentSnapshot.termsAcceptedVersion(): Int? =
+        getLong("termsAcceptedVersion")?.toInt()
 
     // ---- AuthGateway ---------------------------------------------------
     /**

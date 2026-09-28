@@ -34,6 +34,20 @@ internal class MockUserRepository(private val store: MockStore) : UserRepository
         store.currentUser.value = null
     }
 
+    override suspend fun acceptedTermsVersion(): Int? = store.currentUser.value?.termsAcceptedVersion
+
+    override suspend fun acceptTerms(version: Int): Result<Unit> {
+        val user = store.currentUser.value
+            ?: return Result.failure(IllegalStateException("You need to be signed in."))
+        if (user.termsAcceptedVersion == null || user.termsAcceptedVersion < version) {
+            store.currentUser.value = user.copy(
+                termsAcceptedVersion = version,
+                termsAcceptedAtMillis = System.currentTimeMillis(),
+            )
+        }
+        return Result.success(Unit)
+    }
+
     override fun isConfigured(): Boolean = false
 
     override fun webClientId(): String? = null
@@ -49,6 +63,7 @@ internal class MockUserRepository(private val store: MockStore) : UserRepository
             photoUrl = null,
             createdAtMillis = System.currentTimeMillis() - 86_400_000L * 14,
             termsAcceptedAtMillis = System.currentTimeMillis() - 86_400_000L * 14,
+            termsAcceptedVersion = AppConfig.TERMS_VERSION,
             coinBalance = 240,
             trustScore = 72,
             role = UserRole.Member,

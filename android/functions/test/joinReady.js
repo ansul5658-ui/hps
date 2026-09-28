@@ -17,13 +17,21 @@
  * without this helper, in setup.test.js and setup.emulator.test.js.
  */
 
-const { OFFICIAL_GROUP_ID } = require("../lib/constants");
+const { OFFICIAL_GROUP_ID, TERMS_VERSION } = require("../lib/constants");
 const {
   SETUP_CONFIRMATION_FIELD,
   SETUP_CONFIRMATION_KIND,
   appGroupId,
   setupFingerprint,
 } = require("../lib/setup");
+
+/**
+ * Terms acceptance as the acceptTerms callable records it (release audit F2).
+ * Every real signed-in user accepts the Terms before starting anything, so a
+ * seeded user who stands in for one carries it too. The Terms gate itself is
+ * tested explicitly, without this, in terms.test.js and terms.emulator.test.js.
+ */
+const TERMS_ACCEPTED = Object.freeze({ termsAcceptedVersion: TERMS_VERSION, termsAcceptedAt: new Date(0) });
 
 function packageFor(appId) {
   return `com.test.a_${String(appId).replace(/[^A-Za-z0-9_]/g, "_")}`;
@@ -79,6 +87,8 @@ function makeJoinReady(seed) {
   for (const path of Object.keys(seed)) {
     const user = /^users\/([^/]+)$/.exec(path);
     if (!user) continue;
+    // Fields the test set win - including a deliberately unaccepted profile.
+    seed[path] = { ...TERMS_ACCEPTED, ...seed[path] };
     for (const [p, d] of Object.entries(joinReadyDocs(user[1]))) {
       if (!(p in seed)) seed[p] = d;
     }
@@ -89,8 +99,10 @@ function makeJoinReady(seed) {
 /** Emulator form: write the join-ready documents for `uid`. */
 async function seedJoinReady(db, uid) {
   const batch = db.batch();
+  // merge: the test seeded the profile itself; only the acceptance is added.
+  batch.set(db.doc(`users/${uid}`), TERMS_ACCEPTED, { merge: true });
   for (const [p, d] of Object.entries(joinReadyDocs(uid))) batch.set(db.doc(p), d);
   await batch.commit();
 }
 
-module.exports = { packageFor, readyAppDoc, ownAppId, joinReadyDocs, makeJoinReady, seedJoinReady };
+module.exports = { TERMS_ACCEPTED, packageFor, readyAppDoc, ownAppId, joinReadyDocs, makeJoinReady, seedJoinReady };

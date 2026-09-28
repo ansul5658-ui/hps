@@ -48,6 +48,7 @@ const {
   pageSize,
 } = require("./lib/feedback");
 const { requireAuth, requireDocId, requireAdmin, requireNotSuspended } = require("./lib/guards");
+const { requireTermsAccepted } = require("./lib/terms");
 
 const ALREADY_EXISTS = 6;
 
@@ -135,7 +136,8 @@ async function submitTestingFeedbackImpl(db, request) {
   if (!valid.ok) {
     throw new HttpsError("invalid-argument", valid.message, { field: valid.field });
   }
-  await requireNotSuspended(db, uid);
+  const caller = await requireNotSuspended(db, uid);
+  requireTermsAccepted(caller.data);
   const outcome = await runSubmitFeedback(db, { callerId: uid, input: request.data });
   logger.info(`tester ${uid} left feedback on ${outcome.assignmentId}`);
   return outcome;

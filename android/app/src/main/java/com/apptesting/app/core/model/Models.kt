@@ -23,6 +23,8 @@ data class User(
     val photoUrl: String? = null,
     val createdAtMillis: Long = 0L,
     val termsAcceptedAtMillis: Long? = null,
+    /** server-authoritative - the Terms version accepted; null when none. See AppConfig.TERMS_VERSION. */
+    val termsAcceptedVersion: Int? = null,
     /** server-authoritative */
     val coinBalance: Int = 0,
     /** server-authoritative — 0..100 */
