@@ -90,8 +90,10 @@ object AppConfig {
     /**
      * Public URLs of the full policies. RELEASE TODO: both must be set to the
      * real hosted documents before a production release; no production URL
-     * exists yet, so none is invented here. While blank the Terms screen shows
-     * the links as "not yet available" instead of opening a wrong page.
+     * exists yet, so none is invented here. While either is blank the Terms
+     * screen lists it as "Not yet published" instead of opening a wrong page,
+     * and the user agrees only to the on-screen summary. When real documents
+     * are published, bump TERMS_VERSION so everyone accepts them explicitly.
      */
     const val TERMS_OF_SERVICE_URL = ""
     const val PRIVACY_POLICY_URL = ""

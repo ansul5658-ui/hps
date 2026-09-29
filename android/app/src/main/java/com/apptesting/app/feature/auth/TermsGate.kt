@@ -1,6 +1,7 @@
 package com.apptesting.app.feature.auth
 
 import com.apptesting.app.core.data.UserRepository
+import com.apptesting.app.core.data.firebase.functions.CallableException
 import com.apptesting.app.core.util.AppConfig
 
 /**
@@ -26,6 +27,48 @@ internal fun needsTermsAcceptance(
  */
 internal fun policyLinkOrNull(url: String): String? =
     url.trim().takeIf { it.startsWith("https://") && it.length > "https://".length }
+
+/**
+ * True only when BOTH full policy documents can be opened. Until then the
+ * Terms screen must not ask the user to confirm they have read them.
+ */
+internal fun policyDocumentsAvailable(
+    termsUrl: String = AppConfig.TERMS_OF_SERVICE_URL,
+    privacyUrl: String = AppConfig.PRIVACY_POLICY_URL,
+): Boolean = policyLinkOrNull(termsUrl) != null && policyLinkOrNull(privacyUrl) != null
+
+internal const val TERMS_ERROR_SERVICE_UNAVAILABLE =
+    "We couldn't record your agreement because this service isn't available right now. Please try again later."
+internal const val TERMS_ERROR_NETWORK =
+    "We couldn't reach AppTesting. Check your connection and try again."
+internal const val TERMS_ERROR_SIGNED_OUT =
+    "Your session has ended. Please sign in again."
+internal const val TERMS_ERROR_GENERIC =
+    "Couldn't record your acceptance. Please try again."
+
+/** A bare status token such as `NOT_FOUND` or `INTERNAL` - never shown as-is. */
+private val RAW_STATUS_TOKEN = Regex("^[A-Z][A-Z0-9_]*$")
+
+/**
+ * What the Terms screen says when recording acceptance failed.
+ *
+ * A callable that is missing or broken on the server (NOT_FOUND, INTERNAL...)
+ * reaches the client with the HTTP status text as its "message", so the
+ * generic callable mapping would surface e.g. a raw "NOT_FOUND". Those codes
+ * get Terms-specific copy here; the server's own human-written messages
+ * (e.g. "These Terms are out of date...") still pass through.
+ */
+internal fun termsAcceptanceErrorMessage(error: Throwable): String {
+    when ((error as? CallableException)?.code) {
+        "NOT_FOUND", "UNIMPLEMENTED", "INTERNAL", "UNKNOWN", "DATA_LOSS" ->
+            return TERMS_ERROR_SERVICE_UNAVAILABLE
+        "UNAVAILABLE", "DEADLINE_EXCEEDED" -> return TERMS_ERROR_NETWORK
+        "UNAUTHENTICATED" -> return TERMS_ERROR_SIGNED_OUT
+    }
+    return error.message?.trim()
+        ?.takeIf { it.isNotEmpty() && !RAW_STATUS_TOKEN.matches(it) }
+        ?: TERMS_ERROR_GENERIC
+}
 
 /** What the Terms screen shows. */
 sealed interface TermsUiState {
@@ -59,11 +102,6 @@ internal class TermsGateController(
     suspend fun accept(): TermsUiState =
         users.acceptTerms(currentVersion).fold(
             onSuccess = { TermsUiState.Accepted },
-            onFailure = { e ->
-                TermsUiState.Required(
-                    error = e.message?.takeIf { it.isNotBlank() }
-                        ?: "Couldn't record your acceptance. Please try again.",
-                )
-            },
+            onFailure = { e -> TermsUiState.Required(error = termsAcceptanceErrorMessage(e)) },
         )
 }

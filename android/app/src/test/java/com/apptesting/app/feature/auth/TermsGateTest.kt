@@ -3,12 +3,14 @@ package com.apptesting.app.feature.auth
 import com.apptesting.app.core.data.MockStore
 import com.apptesting.app.core.data.MockUserRepository
 import com.apptesting.app.core.data.UserRepository
+import com.apptesting.app.core.data.firebase.functions.CallableException
 import com.apptesting.app.core.model.User
 import com.apptesting.app.core.util.AppConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -103,6 +105,58 @@ class TermsGateTest {
         val gate = TermsGateController(FakeUsers(null, Result.failure(RuntimeException())), 2)
         val state = gate.accept() as TermsUiState.Required
         assertEquals("Couldn't record your acceptance. Please try again.", state.error)
+    }
+
+    // ---- error copy: never a raw backend status ----------------------------
+
+    private fun callable(code: String, message: String) =
+        CallableException(code, reason = null, gaps = emptyList(), message = message)
+
+    @Test
+    fun `a missing acceptTerms callable shows an unavailable message, not NOT_FOUND`() = runBlocking {
+        // What the Functions SDK produces when the callable is not deployed: the
+        // HTTP status text passes through the generic mapping as the message.
+        val gate = TermsGateController(FakeUsers(null, Result.failure(callable("NOT_FOUND", "NOT_FOUND"))), 2)
+        val state = gate.accept() as TermsUiState.Required
+        assertEquals(TERMS_ERROR_SERVICE_UNAVAILABLE, state.error)
+        assertFalse(state.error!!.contains("NOT_FOUND"))
+    }
+
+    @Test
+    fun `server-side breakage never leaks its status or message`() {
+        for (code in listOf("NOT_FOUND", "UNIMPLEMENTED", "INTERNAL", "UNKNOWN", "DATA_LOSS")) {
+            assertEquals(code, TERMS_ERROR_SERVICE_UNAVAILABLE, termsAcceptanceErrorMessage(callable(code, "That item no longer exists.")))
+        }
+    }
+
+    @Test
+    fun `connectivity and session failures get their own explanations`() {
+        assertEquals(TERMS_ERROR_NETWORK, termsAcceptanceErrorMessage(callable("UNAVAILABLE", "Network problem — please try again.")))
+        assertEquals(TERMS_ERROR_NETWORK, termsAcceptanceErrorMessage(callable("DEADLINE_EXCEEDED", "x")))
+        assertEquals(TERMS_ERROR_SIGNED_OUT, termsAcceptanceErrorMessage(callable("UNAUTHENTICATED", "UNAUTHENTICATED")))
+    }
+
+    @Test
+    fun `the server's human-written refusal still passes through`() {
+        val outdated = "These Terms are out of date. Please update the app and review the current Terms."
+        assertEquals(outdated, termsAcceptanceErrorMessage(callable("FAILED_PRECONDITION", outdated)))
+    }
+
+    @Test
+    fun `a bare status token is never shown, whatever carries it`() {
+        assertEquals(TERMS_ERROR_GENERIC, termsAcceptanceErrorMessage(callable("FAILED_PRECONDITION", "FAILED_PRECONDITION")))
+        assertEquals(TERMS_ERROR_GENERIC, termsAcceptanceErrorMessage(IllegalStateException("NOT_FOUND")))
+        assertEquals(TERMS_ERROR_GENERIC, termsAcceptanceErrorMessage(IllegalStateException("   ")))
+    }
+
+    // ---- whether the full documents can be read -----------------------------
+
+    @Test
+    fun `the documents count as available only when both links can be opened`() {
+        assertTrue(policyDocumentsAvailable("https://example.com/terms", "https://example.com/privacy"))
+        assertFalse(policyDocumentsAvailable("", "https://example.com/privacy"))
+        assertFalse(policyDocumentsAvailable("https://example.com/terms", ""))
+        assertFalse(policyDocumentsAvailable("", ""))
     }
 
     // ---- dev-mode persistence ----------------------------------------------
