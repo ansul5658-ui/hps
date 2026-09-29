@@ -88,13 +88,13 @@ object AppConfig {
     const val TERMS_VERSION = 1
 
     /**
-     * Public URLs of the full policies. RELEASE TODO: both must be set to the
-     * real hosted documents before a production release; no production URL
-     * exists yet, so none is invented here. While either is blank the Terms
-     * screen lists it as "Not yet published" instead of opening a wrong page,
-     * and the user agrees only to the on-screen summary. When real documents
-     * are published, bump TERMS_VERSION so everyone accepts them explicitly.
+     * Public URLs of the published policies, opened from the Terms screen.
+     * Must stay absolute https links (see policyLinkOrNull); if either were
+     * ever blanked, the Terms screen would list it as "Not yet published" and
+     * the user would agree only to the on-screen summary. When the published
+     * documents change materially, bump TERMS_VERSION (together with the
+     * backend copies) so everyone accepts the new text explicitly.
      */
-    const val TERMS_OF_SERVICE_URL = ""
-    const val PRIVACY_POLICY_URL = ""
+    const val TERMS_OF_SERVICE_URL = "https://ansul5658-ui.github.io/apptesting-legal/terms-of-service.html"
+    const val PRIVACY_POLICY_URL = "https://ansul5658-ui.github.io/apptesting-legal/privacy-policy.html"
 }

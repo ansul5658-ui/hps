@@ -46,8 +46,13 @@ internal const val TERMS_ERROR_SIGNED_OUT =
 internal const val TERMS_ERROR_GENERIC =
     "Couldn't record your acceptance. Please try again."
 
-/** A bare status token such as `NOT_FOUND` or `INTERNAL` - never shown as-is. */
-private val RAW_STATUS_TOKEN = Regex("^[A-Z][A-Z0-9_]*$")
+/**
+ * Machine text that must never reach the screen: a status token on its own or
+ * leading the message (`NOT_FOUND`, `NOT_FOUND: ...`, `INTERNAL:`), or a raw
+ * exception (`java.io.IOException: ...`, `com.google...Exception`).
+ */
+private val RAW_STATUS_TOKEN = Regex("^[A-Z][A-Z0-9_]*(:.*)?$", RegexOption.DOT_MATCHES_ALL)
+private val RAW_EXCEPTION = Regex("^[a-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_$]+)+(Exception|Error)\\b.*", RegexOption.DOT_MATCHES_ALL)
 
 /**
  * What the Terms screen says when recording acceptance failed.
@@ -66,7 +71,7 @@ internal fun termsAcceptanceErrorMessage(error: Throwable): String {
         "UNAUTHENTICATED" -> return TERMS_ERROR_SIGNED_OUT
     }
     return error.message?.trim()
-        ?.takeIf { it.isNotEmpty() && !RAW_STATUS_TOKEN.matches(it) }
+        ?.takeIf { it.isNotEmpty() && !RAW_STATUS_TOKEN.matches(it) && !RAW_EXCEPTION.matches(it) }
         ?: TERMS_ERROR_GENERIC
 }
 

@@ -149,6 +149,31 @@ class TermsGateTest {
         assertEquals(TERMS_ERROR_GENERIC, termsAcceptanceErrorMessage(IllegalStateException("   ")))
     }
 
+    @Test
+    fun `a status token leading a message, or a raw exception, is never shown`() {
+        for (raw in listOf(
+            "NOT_FOUND:",
+            "NOT_FOUND: Function acceptTerms not found",
+            "INTERNAL: \nstack",
+            "FAILED_PRECONDITION: failed",
+            "java.io.IOException: unexpected end of stream",
+            "com.google.firebase.functions.FirebaseFunctionsException: NOT_FOUND",
+        )) {
+            assertEquals(raw, TERMS_ERROR_GENERIC, termsAcceptanceErrorMessage(IllegalStateException(raw)))
+            assertEquals(raw, TERMS_ERROR_GENERIC, termsAcceptanceErrorMessage(callable("FAILED_PRECONDITION", raw)))
+        }
+    }
+
+    @Test
+    fun `a missing acceptTerms callable never shows NOT_FOUND in any form`() = runBlocking {
+        for (message in listOf("NOT_FOUND", "NOT_FOUND:", "NOT_FOUND: not found", "That item no longer exists.")) {
+            val gate = TermsGateController(FakeUsers(null, Result.failure(callable("NOT_FOUND", message))), 1)
+            val error = (gate.accept() as TermsUiState.Required).error!!
+            assertEquals(message, TERMS_ERROR_SERVICE_UNAVAILABLE, error)
+            assertFalse(message, error.contains("NOT_FOUND"))
+        }
+    }
+
     // ---- whether the full documents can be read -----------------------------
 
     @Test
@@ -157,6 +182,21 @@ class TermsGateTest {
         assertFalse(policyDocumentsAvailable("", "https://example.com/privacy"))
         assertFalse(policyDocumentsAvailable("https://example.com/terms", ""))
         assertFalse(policyDocumentsAvailable("", ""))
+    }
+
+    @Test
+    fun `the published policy URLs are configured and both count as available`() {
+        assertEquals(
+            "https://ansul5658-ui.github.io/apptesting-legal/terms-of-service.html",
+            AppConfig.TERMS_OF_SERVICE_URL,
+        )
+        assertEquals(
+            "https://ansul5658-ui.github.io/apptesting-legal/privacy-policy.html",
+            AppConfig.PRIVACY_POLICY_URL,
+        )
+        assertEquals(AppConfig.TERMS_OF_SERVICE_URL, policyLinkOrNull(AppConfig.TERMS_OF_SERVICE_URL))
+        assertEquals(AppConfig.PRIVACY_POLICY_URL, policyLinkOrNull(AppConfig.PRIVACY_POLICY_URL))
+        assertTrue("the shipped configuration", policyDocumentsAvailable())
     }
 
     // ---- dev-mode persistence ----------------------------------------------

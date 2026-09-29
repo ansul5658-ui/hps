@@ -2,6 +2,9 @@ package com.apptesting.app.feature.auth
 
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -16,6 +19,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.apptesting.app.core.designsystem.theme.AppTestingTheme
+import com.apptesting.app.core.util.AppConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -50,6 +54,77 @@ class TermsContentTest {
                     )
                 }
             }
+        }
+    }
+
+    private val openedUris = mutableListOf<String>()
+
+    /** The screen exactly as shipped: AppConfig's URLs, and a recording URI handler. */
+    private fun showShipped(fontScale: Float? = null) {
+        compose.setContent {
+            val base = LocalDensity.current
+            val density = fontScale?.let { Density(base.density, it) } ?: base
+            val uriHandler = object : UriHandler {
+                override fun openUri(uri: String) {
+                    openedUris += uri
+                }
+            }
+            CompositionLocalProvider(LocalDensity provides density, LocalUriHandler provides uriHandler) {
+                AppTestingTheme {
+                    TermsContent(state = TermsUiState.Required(), onAccept = { acceptClicks++ })
+                }
+            }
+        }
+    }
+
+    @Test
+    fun shippedConfiguration_linksBothDocuments_withNoUnavailableState() {
+        showShipped()
+        compose.onNodeWithText("Terms of Service").assertIsDisplayed().assertHasClickAction().assertIsEnabled()
+        compose.onNodeWithText("Privacy Policy").assertIsDisplayed().assertHasClickAction().assertIsEnabled()
+        compose.onNodeWithText(TERMS_AGREE_WITH_DOCUMENTS).assertIsDisplayed()
+        compose.onNodeWithText(TERMS_AGREE_SUMMARY_ONLY).assertDoesNotExist()
+        compose.onNodeWithText(TERMS_DOCUMENTS_UNAVAILABLE_TITLE).assertDoesNotExist()
+        compose.onNodeWithText(TERMS_DOCUMENT_NOT_PUBLISHED).assertDoesNotExist()
+        compose.onNodeWithText("not yet", substring = true, ignoreCase = true).assertDoesNotExist()
+        compose.onNodeWithText("unavailable", substring = true, ignoreCase = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun tappingTermsOfService_opensTheConfiguredTermsUrl() {
+        showShipped()
+        compose.onNodeWithText("Terms of Service").performClick()
+        compose.runOnIdle { assertEquals(listOf(AppConfig.TERMS_OF_SERVICE_URL), openedUris) }
+    }
+
+    @Test
+    fun tappingPrivacyPolicy_opensTheConfiguredPrivacyUrl() {
+        showShipped()
+        compose.onNodeWithText("Privacy Policy").performClick()
+        compose.runOnIdle { assertEquals(listOf(AppConfig.PRIVACY_POLICY_URL), openedUris) }
+    }
+
+    @Test
+    fun shippedConfiguration_privacyPolicyIsNotSqueezed_atLargeFontScale() {
+        showShipped(fontScale = 1.5f)
+        val root = compose.onRoot().getUnclippedBoundsInRoot()
+        val terms = compose.onNodeWithText("Terms of Service").getUnclippedBoundsInRoot()
+        val privacy = compose.onNodeWithText("Privacy Policy").getUnclippedBoundsInRoot()
+        assertEquals(terms.left.value, privacy.left.value, 0.5f)
+        assertTrue(privacy.top >= terms.bottom)
+        assertTrue(privacy.right - privacy.left >= (root.right - root.left) / 2)
+    }
+
+    @Test
+    fun shippedConfiguration_theFullAgreementRowTogglesTheCheckbox_andEnablesAccept() {
+        showShipped()
+        compose.onNodeWithTag(TERMS_TAG_ACCEPT).assertIsNotEnabled()
+        compose.onNodeWithText(TERMS_AGREE_WITH_DOCUMENTS).performClick()
+        compose.onNodeWithTag(TERMS_TAG_AGREE).assertIsOn()
+        compose.onNodeWithTag(TERMS_TAG_ACCEPT).assertIsEnabled().performClick()
+        compose.runOnIdle {
+            assertEquals(1, acceptClicks)
+            assertEquals("accepting opens no document", emptyList<String>(), openedUris)
         }
     }
 
