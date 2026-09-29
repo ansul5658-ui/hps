@@ -137,7 +137,11 @@ exports.adminSetUserSuspended = onCall({ region: REGION }, async (request) => {
  *
  * Groups are server-only (rules: `allow write: if false`), so this is how the
  * official group gets seeded and edited without console access. `memberCount`
- * is never accepted from the caller — it is owned by syncGroupMemberCount.
+ * is never accepted from the caller: a new group starts at 0 and an edit never
+ * touches it. It counts seats (`groups/{id}/members/*`) and is moved only by
+ * joinGroup and syncGroupMemberCount (groups.js), in the same transaction as
+ * the seat. Lowering `memberCap` below it refuses new joins only; nobody is
+ * removed.
  */
 exports.adminUpsertGroup = onCall({ region: REGION }, async (request) => {
   const db = getFirestore();

@@ -123,8 +123,11 @@ async function runEligibilityPreview(db, { appId, requestedCount, groupIdOverrid
     };
   }
 
-  // Candidate pool = members of the app's testing group. The group member
-  // mirror under groups/{id}/members is maintained by syncGroupMemberCount.
+  // Candidate pool = members of the app's testing group, enumerated from their
+  // seats under groups/{id}/members. Seats mirror the memberships: joinGroup
+  // writes one atomically with the membership, and syncGroupMemberCount frees
+  // it after a leave. A seat whose leave trigger has not run yet can briefly
+  // list someone who has left; suspension, below, is still read from the user.
   const groupId = groupIdOverride || app.activeGroupId || OFFICIAL_GROUP_ID;
   const memberSnap = await db
     .collection(`groups/${groupId}/members`)

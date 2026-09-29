@@ -253,12 +253,23 @@ service cloud.firestore {
     match /groups/{groupId} {
       // Any signed-in user can discover groups.
       allow read: if signedIn();
-      // Groups are created and edited only by the adminUpsertGroup callable,
-      // and memberCount only by syncGroupMemberCount.
+      // Groups are created and edited only by the adminUpsertGroup callable.
+      // memberCount counts seats (members/*) and is moved only by joinGroup
+      // and syncGroupMemberCount, by exactly one per seat taken or freed, in
+      // the same transaction as that seat. Every such transaction reads this
+      // document first, so it is the serialization point for concurrent
+      // joins and the cap check cannot be raced.
       allow write: if false;
 
-      // Server-maintained mirror of who is in the group. Written only by
-      // syncGroupMemberCount; read by the owner of the row and by admins.
+      // A member's SEAT: the server-maintained mirror of
+      // users/{uid}/memberships/{groupId}, which stays the source of truth.
+      // joinGroup writes the membership, the seat and memberCount atomically;
+      // a join that finds the group full frees any seat whose membership is
+      // gone (a stale seat) in its own transaction. syncGroupMemberCount, on
+      // any membership write, re-reads the state and frees a seat whose
+      // membership was deleted (a leave) or seats a membership that has none,
+      // and otherwise writes nothing. Read by the owner of the row and by
+      // admins; a client write here would take or free a seat.
       match /members/{memberId} {
         allow read: if isSelf(memberId) || isAdmin();
         allow write: if false;
