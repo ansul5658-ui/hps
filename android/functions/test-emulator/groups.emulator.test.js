@@ -2,13 +2,14 @@
  * Groups on the Firestore emulator - CHARACTERIZATION (Groups Phase 1, G1).
  *
  * The real `joinGroup` callable, the real `syncGroupMemberCount` handler and
- * the real claim gate, against a real Firestore. These record what happens
- * TODAY, including behaviour the project has decided to change later:
- *   * the member cap is checked against the mirror, outside any transaction,
- *     so a burst of joins can overshoot it;
- *   * a mirror row left behind by a missed trigger still counts toward the cap;
- *   * membership of an archived group still satisfies the claim gate
- *     (intended: it must not, for NEW commitments; existing ones unaffected).
+ * the real claim gate, against a real Firestore. G1 recorded two cap defects
+ * here as CURRENT behaviour; Groups Phase 2 (G2) fixed them, so those tests
+ * now assert the intended behaviour and FAIL on the G1 code:
+ *   * a burst of joins can no longer overshoot the cap;
+ *   * a mirror row left behind by a missed trigger no longer blocks a seat.
+ * (groups.capacity.emulator.test.js covers the fix in depth.) Still recorded
+ * as CURRENT, not changed: membership of an archived group satisfies the
+ * claim gate (intended: it must not, for NEW commitments).
  *
  * Only the Firestore emulator runs here, so the sync trigger is not delivered
  * by the platform. Each test invokes its real handler with real before/after
@@ -121,7 +122,7 @@ const memberCountOf = async (gid) => (await db.doc(`groups/${gid}`).get()).get("
 // Joining
 // ---------------------------------------------------------------------------
 
-test("join: the real callable creates one membership and nothing else", async () => {
+test("join: the real callable creates the membership, its seat and the count in one step", async () => {
   await group(G, { status: "open", memberCap: 0, memberCount: 0 });
   await signedUp("u1");
   const out = await join("u1", G);
@@ -132,8 +133,12 @@ test("join: the real callable creates one membership and nothing else", async ()
   assert.equal(m.get("groupId"), G);
   assert.equal(m.get("userId"), "u1");
   assert.ok(m.get("joinedAt"), "a server timestamp was written");
-  assert.equal(await exists(mirrorRef(G, "u1")), false, "the mirror is the trigger's job, not the callable's");
-  assert.equal(await memberCountOf(G), 0);
+  // G2: the seat is taken in the SAME transaction as the membership, so the
+  // cap never depends on the trigger having run.
+  const seat = await mirrorRef(G, "u1").get();
+  assert.equal(seat.exists, true, "the seat is written with the membership");
+  assert.deepEqual(seat.get("joinedAt"), m.get("joinedAt"), "same joinedAt");
+  assert.equal(await memberCountOf(G), 1);
 });
 
 test("join: re-joining is idempotent against real Firestore", async () => {
@@ -192,7 +197,7 @@ test("cap: when the trigger runs after every join, sequential joins stop exactly
   assert.equal(await memberCountOf(G), 3);
 });
 
-test(`cap: CURRENT behaviour - a burst at N-1 capacity OVERSHOOTS the cap before the trigger runs, across ${ROUNDS} rounds`, async () => {
+test(`cap: a burst at N-1 capacity, before any trigger runs, admits exactly one - no overshoot, across ${ROUNDS} rounds`, async () => {
   const CAP = 5;
   const existing = uids("e", CAP - 1);
   const burst = uids("b", 5);
@@ -203,28 +208,27 @@ test(`cap: CURRENT behaviour - a burst at N-1 capacity OVERSHOOTS the cap before
     for (const uid of existing) await joinThenSync(uid, G); // 4 of 5 seats, fully synced
     assert.equal(await memberCountOf(G), CAP - 1);
 
-    // Five joins at once, with the trigger not yet run for any of them: each
-    // counts the same four mirror rows, so each sees a free seat.
+    // Five joins at once, with the trigger not yet run for any of them. On the
+    // G1 code each counted the same four mirror rows and all five were
+    // admitted for the one seat; now the seat is taken transactionally.
     const befores = await Promise.all(burst.map((uid) => membershipRef(uid, G).get()));
     const out = await settled(burst.map((uid) => join(uid, G)));
     const label = `round ${round}`;
-    assert.deepEqual(out.rejected.map((e) => e.code), [], `${label}: nobody is refused`);
-    assert.equal(out.fulfilled.filter((r) => r.joined).length, burst.length, `${label}: all ${burst.length} admitted for 1 seat`);
+    assert.equal(out.fulfilled.filter((r) => r.joined).length, 1, `${label}: exactly 1 admitted for 1 seat`);
+    assert.deepEqual(out.rejected.map((e) => e.code), Array(burst.length - 1).fill("resource-exhausted"), `${label}: the rest are full`);
 
-    // Once the triggers catch up, the recorded count shows the overshoot.
+    // Once the triggers catch up, nothing changes.
     for (let i = 0; i < burst.length; i += 1) await syncWrite(burst[i], G, befores[i]);
     const members = await countExisting([...existing, ...burst].map((uid) => membershipRef(uid, G)));
-    assert.equal(members, CAP - 1 + burst.length, `${label}: ${members} members under a cap of ${CAP}`);
-    assert.equal(await memberCountOf(G), members, `${label}: memberCount reflects the overshoot`);
+    assert.equal(members, CAP, `${label}: ${members} members under a cap of ${CAP}`);
+    assert.equal(await memberCountOf(G), members, `${label}: memberCount equals the members`);
   }
 });
 
-test(`cap: joins racing with their OWN triggers - record how far the cap is exceeded, across ${ROUNDS} rounds`, async () => {
+test(`cap: joins racing with their OWN triggers never exceed the cap, across ${ROUNDS} rounds`, async () => {
   // Each join is followed by its trigger, but the joins race each other: the
-  // realistic production shape. The outcome is timing-dependent, so this test
-  // records it (printed as a diagnostic) and asserts only what must hold
-  // either way: the recount, run once more after everything settles, matches
-  // the real membership exactly.
+  // realistic production shape. G1 recorded 5 admitted for the 1 free seat in
+  // 10/10 rounds; now exactly one is admitted and the count is never stale.
   const CAP = 5;
   const existing = uids("e", CAP - 1);
   const burst = uids("r", 5);
@@ -261,10 +265,11 @@ test(`cap: joins racing with their OWN triggers - record how far the cap is exce
       `rounds over the cap: ${overshootRounds}/${ROUNDS}; ` +
       `rounds whose memberCount was stale before a final recount: ${JSON.stringify(staleCountRounds)}`,
   );
-  assert.ok(admittedPerRound.every((n) => n >= 1), "the free seat is always taken by someone");
+  assert.deepEqual(admittedPerRound, Array(ROUNDS).fill(1), "exactly the one free seat is taken, every round");
+  assert.deepEqual(staleCountRounds, [], "memberCount is never stale");
 });
 
-test("cap: CURRENT behaviour - a mirror row left behind by a missed trigger still occupies a seat", async () => {
+test("cap: a mirror row left behind by a missed trigger no longer occupies a seat", async () => {
   await group(G, { status: "open", memberCap: 1, memberCount: 0 });
   await signedUp("first", "second");
   await joinThenSync("first", G);
@@ -272,12 +277,15 @@ test("cap: CURRENT behaviour - a mirror row left behind by a missed trigger stil
 
   assert.equal(await exists(membershipRef("first", G)), false, "the member has left");
   assert.equal(await exists(mirrorRef(G, "first")), true, "but their mirror row is still there");
-  await assert.rejects(join("second", G), (e) => e.code === "resource-exhausted", "an empty group reports full");
+  // G1: an empty group reported full here. The membership is the source of
+  // truth, so the stale row is repaired and the seat given out.
+  assert.equal((await join("second", G)).joined, true, "an empty group is not full");
+  assert.equal(await exists(mirrorRef(G, "first")), false, "the stale row was removed");
+  assert.equal(await memberCountOf(G), 1);
 
-  // The trigger finally running frees the seat.
+  // The trigger finally running changes nothing more.
   await syncWrite("first", G, { exists: true, get: () => undefined });
-  assert.equal(await exists(mirrorRef(G, "first")), false);
-  assert.equal((await join("second", G)).joined, true);
+  assert.equal(await memberCountOf(G), 1, "freed exactly once");
 });
 
 // ---------------------------------------------------------------------------
@@ -308,7 +316,8 @@ test(`official group: parallel first joins all succeed and leave one well-formed
     assert.equal(out.fulfilled.filter((r) => r.joined).length, people.length, `round ${round}`);
     const g = await db.doc(`groups/${OFFICIAL_GROUP_ID}`).get();
     assert.equal(g.get("status"), "open", `round ${round}`);
-    assert.equal(g.get("memberCount"), 0, `round ${round}: provisioning leaves the count to the trigger`);
+    // G2: each join counts its own seat in its transaction (G1: 0 until the trigger ran).
+    assert.equal(g.get("memberCount"), people.length, `round ${round}: every join is counted`);
   }
 });
 
@@ -335,8 +344,8 @@ test("mirror: join, second join, leave and recount keep the mirror and memberCou
   assert.equal(await exists(mirrorRef(G, "a")), false, "mirror row deleted");
   assert.equal(await memberCountOf(G), 1);
 
-  // A stale memberCount is corrected by the next recount, not incremented.
-  await db.doc(`groups/${G}`).update({ memberCount: 99 });
+  // memberCount moves by exactly one per seat taken or freed, in the same
+  // transaction as the seat; an event that changes no seat changes nothing.
   await syncGroupMemberCount.run({ params: { userId: "nobody", groupId: G }, data: null });
   assert.equal(await memberCountOf(G), 1);
 });
