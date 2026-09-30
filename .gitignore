@@ -1,2 +1,5 @@
 saas/.next/
 saas/node_modules/
+
+# Android Studio / IntelliJ
+.idea/
